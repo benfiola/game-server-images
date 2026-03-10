@@ -1,0 +1,120 @@
+name: publish
+
+# on:
+#   push:
+#     branches:
+#       - "*"
+
+jobs:
+  create-tag:
+    concurrency:
+      group: ${{github.workflow}}-create-tag
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: configure git environment
+        run: |
+          git config --global user.name github-actions
+          git config --global user.email github-actions@github.com
+      - name: install tools
+        run: |
+          sudo BIN=/usr/local/bin make install-tools
+      - name: determine version
+        id: version
+        run: |
+          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+          BRANCH_NAME="$(echo "${BRANCH_NAME}" | sed 's/[^a-zA-Z0-9.-]/-/g')"
+          if [[ "${BRANCH_NAME}" == "dev" ]]; then
+            VERSION="$(svu next --prerelease "rc.${GITHUB_RUN_NUMBER}")"
+          elif [[ "${BRANCH_NAME}" == "main" ]]; then
+            VERSION="$(svu next)"
+          else
+            VERSION="$(svu next --prerelease "alpha.${GITHUB_RUN_NUMBER}" --metadata "${BRANCH_NAME}")"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+      - name: create git tag
+        run: |
+          git tag "${{ steps.version.outputs.version }}"
+          git push origin "${{ steps.version.outputs.version }}"
+
+  publish-goreleaser:
+    needs: [create-tag]
+    permissions:
+      contents: write
+      packages: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-tags: true
+      - name: set up qemu
+        uses: docker/setup-qemu-action@v3
+      - name: set up docker buildx
+        uses: docker/setup-buildx-action@v3
+      - name: set up go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.25.5"
+      - name: log in to github container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: install tools
+        run: |
+          sudo BIN=/usr/local/bin make install-tools
+      - name: generate content
+        run: |
+          make generate
+          git diff --exit-code
+      - name: run goreleaser
+        uses: goreleaser/goreleaser-action@v5
+        with:
+          version: "2.12.7"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-docs:
+    needs: [create-tag]
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.21.0"
+      - name: build docs
+        run: |
+          DIST=dist make build-docs
+      - name: upload docs
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  publish-docs:
+    needs: [build-docs]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      pages: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: deploy docs
+        id: deployment
+        uses: actions/deploy-pages@v4

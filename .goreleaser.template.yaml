@@ -1,0 +1,21 @@
+version: 2
+
+project_name: game-server-images
+
+builds:
+  - id: game-server-helper
+    goos:
+      - linux
+    goarch:
+      - arm64
+      - amd64
+    ldflags:
+      - "-X {{ .ModulePath }}/internal/info.Version={{ .Version }}"
+    main: ./cmd/game-server-helper
+
+release:
+  footer: |
+    **Docker Image:** `ghcr.io/benfiola/homelab-helper:{{ .Version }}`
+
+changelog:
+  use: github-native
