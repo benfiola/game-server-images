@@ -1,0 +1,36 @@
+{
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code",
+        "esbenp.prettier-vscode",
+        "golang.go",
+        "rohit-gohri.format-code-action"
+      ],
+      "settings": {
+        "[go]": {
+          "editor.defaultFormatter": "golang.go"
+        },
+        "editor.codeActionsOnSave": [
+          "source.organizeImports",
+          "source.formatDocument"
+        ],
+        "editor.defaultFormatter": "esbenp.prettier-vscode"
+      }
+    }
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/go:1": {
+      "version": "1.25.8"
+    },
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "24.14.0"
+    }
+  },
+  "image": "ubuntu:latest",
+  "postCreateCommand": ".devcontainer/post-create.sh",
+  "mounts": [
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.claude,target=/root/.claude,type=bind,consistency=cached"
+  ]
+}

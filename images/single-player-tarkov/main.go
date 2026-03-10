@@ -1,0 +1,558 @@
+package main
+
+import (
+	"context"
+	"crypto/tls"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"syscall"
+	"time"
+
+	"github.com/benfiola/game-server-images/internal/archive"
+	"github.com/benfiola/game-server-images/internal/cache"
+	"github.com/benfiola/game-server-images/internal/cliutil"
+	"github.com/benfiola/game-server-images/internal/cmd"
+	"github.com/benfiola/game-server-images/internal/healthcheck"
+	httputil "github.com/benfiola/game-server-images/internal/http"
+	"github.com/benfiola/game-server-images/internal/jsonpatch"
+	"github.com/benfiola/game-server-images/internal/logging"
+	"github.com/urfave/cli/v3"
+)
+
+const (
+	ServerPort = 6969
+)
+
+type Opts struct {
+	CachePath     string
+	DataPath      string
+	DataSubDirs   []string
+	GamePath      string
+	Version       string
+	ModUrls       []string
+	ConfigPatches map[string][]jsonpatch.Patch
+}
+
+func (o *Opts) Validate() error {
+	if o.CachePath == "" {
+		return fmt.Errorf("cache path is required")
+	}
+	if o.DataPath == "" {
+		return fmt.Errorf("data path is required")
+	}
+	if o.GamePath == "" {
+		return fmt.Errorf("game path is required")
+	}
+	return nil
+}
+
+var semverRegex = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
+
+func GetMajorVersion(version string) (major int, err error) {
+	_, err = fmt.Sscanf(version, "%d", &major)
+	return
+}
+
+func GetLatestVersion(ctx context.Context) (string, error) {
+	logger := logging.FromContext(ctx)
+	logger.Debug("fetching releases from GitHub")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get("https://api.github.com/repos/benfiola/game-server-images-single-player-tarkov/releases?per_page=100")
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch releases: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
+	}
+
+	type Release struct {
+		TagName string `json:"tag_name"`
+	}
+
+	var releases []Release
+	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+		return "", fmt.Errorf("failed to parse releases: %w", err)
+	}
+
+	for _, release := range releases {
+		if semverRegex.MatchString(release.TagName) {
+			return release.TagName, nil
+		}
+	}
+
+	return "", fmt.Errorf("failed to find latest version")
+}
+
+func DownloadGame(ctx context.Context, c *cache.Cache, version string, gamePath string) error {
+	logger := logging.FromContext(ctx)
+
+	cacheKey := fmt.Sprintf("spt-%s", version)
+
+	if !c.Exists(ctx, cacheKey) {
+		arch := runtime.GOARCH
+		switch arch {
+		case "amd64":
+			arch = "amd64"
+		case "arm64":
+			arch = "arm64"
+		default:
+			return fmt.Errorf("unsupported architecture: %s", arch)
+		}
+		downloadURL := fmt.Sprintf("https://github.com/benfiola/game-server-images-single-player-tarkov/releases/download/%s/spt-%s-%s.tar.gz", version, version, arch)
+
+		logger.Info("downloading SPT release", "version", version, "url", downloadURL)
+
+		tempFile := filepath.Join(gamePath, ".temp-spt.tar.gz")
+		if err := os.MkdirAll(filepath.Dir(tempFile), 0755); err != nil {
+			return err
+		}
+
+		if err := httputil.Download(ctx, downloadURL, tempFile); err != nil {
+			os.Remove(tempFile)
+			return fmt.Errorf("failed to download SPT: %w", err)
+		}
+
+		logger.Debug("extracting SPT archive")
+		if err := archive.Extract(ctx, tempFile, gamePath); err != nil {
+			os.Remove(tempFile)
+			return fmt.Errorf("failed to extract SPT: %w", err)
+		}
+
+		logger.Info("caching downloaded SPT", "key", cacheKey)
+		if err := c.Put(ctx, cacheKey, gamePath); err != nil {
+			return err
+		}
+
+		os.Remove(tempFile)
+	} else {
+		logger.Info("using cached SPT download", "version", version)
+		if err := c.Get(ctx, cacheKey, gamePath); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func InstallMod(ctx context.Context, c *cache.Cache, gamePath string, mod string) error {
+	logger := logging.FromContext(ctx)
+
+	key := fmt.Sprintf("mod-%s", mod)
+	logger.Info("installing mod", "mod", mod)
+
+	destModsPath := filepath.Join(gamePath, "user", "mods")
+	if err := os.MkdirAll(destModsPath, 0755); err != nil {
+		return err
+	}
+
+	tempPath, err := os.MkdirTemp("", "spt-install-mod-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tempPath)
+
+	extractPath := filepath.Join(tempPath, "extract")
+	if err := os.MkdirAll(extractPath, 0755); err != nil {
+		return err
+	}
+
+	if !c.Exists(ctx, key) {
+		downloadPath := filepath.Join(tempPath, filepath.Base(mod))
+		if err := httputil.Download(ctx, mod, downloadPath); err != nil {
+			return fmt.Errorf("failed to download mod: %w", err)
+		}
+
+		if err := archive.Extract(ctx, downloadPath, extractPath); err != nil {
+			return fmt.Errorf("failed to extract mod: %w", err)
+		}
+
+		if err := c.Put(ctx, key, extractPath); err != nil {
+			return fmt.Errorf("failed to cache mod: %w", err)
+		}
+	} else {
+		logger.Info("using cached mod", "mod", mod)
+		if err := c.Get(ctx, key, extractPath); err != nil {
+			return err
+		}
+	}
+
+	srcModPath := ""
+	if err := filepath.WalkDir(extractPath, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && d.Name() == "mods" && filepath.Base(filepath.Dir(path)) == "user" {
+			srcModPath = path
+			return filepath.SkipAll
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("failed to find mod subfolder for %s: %w", mod, err)
+	}
+	if srcModPath == "" {
+		return fmt.Errorf("failed to find mod subfolder for %s", mod)
+	}
+
+	logger.Debug("copying mod", "src", srcModPath, "dst", destModsPath)
+	if err := os.CopyFS(destModsPath, os.DirFS(srcModPath)); err != nil {
+		return fmt.Errorf("failed to copy mod: %w", err)
+	}
+
+	return nil
+}
+
+func InstallMods(ctx context.Context, c *cache.Cache, gamePath string, mods []string) error {
+	for _, mod := range mods {
+		if err := InstallMod(ctx, c, gamePath, mod); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func ApplyConfigPatches(ctx context.Context, gamePath string, patches map[string][]jsonpatch.Patch) error {
+	logger := logging.FromContext(ctx)
+
+	if len(patches) == 0 {
+		logger.Debug("no config patches to apply")
+		return nil
+	}
+
+	logger.Info("applying config patches", "count", len(patches))
+
+	for filePath, filePatch := range patches {
+		fullPath := filepath.Join(gamePath, filePath)
+		logger.Debug("applying patch to config", "path", filePath)
+
+		data, err := os.ReadFile(fullPath)
+		if err != nil {
+			return fmt.Errorf("failed to read config %s: %w", filePath, err)
+		}
+
+		var original map[string]interface{}
+		if err := json.Unmarshal(data, &original); err != nil {
+			return fmt.Errorf("failed to parse config %s: %w", filePath, err)
+		}
+
+		var patched map[string]interface{}
+		if err := jsonpatch.ApplyPatches(original, filePatch, &patched); err != nil {
+			return fmt.Errorf("failed to apply patches to %s: %w", filePath, err)
+		}
+
+		patchedData, err := json.MarshalIndent(patched, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal config %s: %w", filePath, err)
+		}
+
+		if err := os.WriteFile(fullPath, patchedData, 0644); err != nil {
+			return fmt.Errorf("failed to write config %s: %w", filePath, err)
+		}
+
+		logger.Debug("config patch applied", "path", filePath)
+	}
+
+	return nil
+}
+
+func WaitForServerReady(ctx context.Context) error {
+	serverUrl := fmt.Sprintf("https://localhost:%d", ServerPort)
+	logger := logging.FromContext(ctx)
+	logger.Info("waiting for server to be ready", "url", serverUrl)
+
+	maxRetries := 30
+	delay := 1 * time.Second
+	maxDelay := 30 * time.Second
+
+	for attempt := range maxRetries {
+		client := &http.Client{
+			Timeout: 5 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			},
+		}
+		resp, err := client.Get(serverUrl)
+
+		if err == nil && resp.StatusCode == http.StatusOK {
+			resp.Body.Close()
+			logger.Info("server is ready")
+			return nil
+		}
+
+		if err != nil {
+			logger.Debug("server health check failed", "attempt", attempt+1, "error", err)
+		} else if resp.StatusCode != http.StatusOK {
+			logger.Debug("server returned non-OK status", "attempt", attempt+1, "status", resp.StatusCode)
+			resp.Body.Close()
+		}
+
+		if attempt < maxRetries-1 {
+			logger.Debug("retrying server readiness check", "attempt", attempt+1, "nextDelay", delay)
+			select {
+			case <-time.After(delay):
+				delay = time.Duration(float64(delay) * 1.5)
+				if delay > maxDelay {
+					delay = maxDelay
+				}
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+
+	return fmt.Errorf("server did not become ready after %d attempts", maxRetries)
+}
+
+func InitializeServer(ctx context.Context, gamePath string, version string) error {
+	logger := logging.FromContext(ctx)
+	logger.Info("initializing server for first-run config generation")
+
+	serverCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	serverErr := make(chan error, 1)
+	go func() {
+		serverErr <- RunServer(serverCtx, gamePath, version)
+	}()
+
+	if err := WaitForServerReady(ctx); err != nil {
+		cancel()
+		<-serverErr
+		return fmt.Errorf("server failed to become ready: %w", err)
+	}
+
+	logger.Info("server is ready, shutting down initialization instance")
+
+	cancel()
+	if err := <-serverErr; err != nil {
+		logger.Debug("server shutdown result", "error", err)
+	}
+
+	return nil
+}
+
+func CreateSymlinks(ctx context.Context, gamePath string, dataPath string, subDirs []string) error {
+	logger := logging.FromContext(ctx)
+	logger.Info("creating data persistence symlinks")
+
+	for _, subDir := range subDirs {
+		dataSubPath := filepath.Join(dataPath, subDir)
+		gameSubPath := filepath.Join(gamePath, subDir)
+
+		if err := os.MkdirAll(dataSubPath, 0755); err != nil {
+			return err
+		}
+
+		if err := os.RemoveAll(gameSubPath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+
+		logger.Debug("creating symlink", "src", dataSubPath, "dst", gameSubPath)
+		if err := os.Symlink(dataSubPath, gameSubPath); err != nil {
+			return fmt.Errorf("failed to create user symlink: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func SetupSignalHandler(ctx context.Context) {
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
+}
+
+func MergeConfigPatches(patchMaps ...map[string][]jsonpatch.Patch) map[string][]jsonpatch.Patch {
+	result := make(map[string][]jsonpatch.Patch)
+	for _, patchMap := range patchMaps {
+		for key, patches := range patchMap {
+			result[key] = append(result[key], patches...)
+		}
+	}
+	return result
+}
+
+func GetConfigPatches(version string, userPatches map[string][]jsonpatch.Patch) (map[string][]jsonpatch.Patch, error) {
+	major, err := GetMajorVersion(version)
+	if err != nil {
+		return nil, err
+	}
+
+	configsPath := "SPT_Data/Server/configs"
+	if major >= 4 {
+		configsPath = "SPT_Data/configs"
+	}
+
+	patchOverrides := map[string][]jsonpatch.Patch{
+		fmt.Sprintf("%s/http.json", configsPath): {
+			{Op: "replace", Path: "/ip", Value: "0.0.0.0"},
+			{Op: "replace", Path: "/backendIp", Value: "0.0.0.0"},
+		},
+	}
+	return MergeConfigPatches(userPatches, patchOverrides), nil
+}
+
+func GetServerExecutable(version string) (string, error) {
+	major, err := GetMajorVersion(version)
+	if err != nil {
+		return "", err
+	}
+
+	if major < 4 {
+		return "./SPT.Server.exe", nil
+	}
+	return "./SPT.Server.Linux", nil
+}
+
+func RunServer(ctx context.Context, gamePath string, version string) error {
+	logger := logging.FromContext(ctx)
+
+	executable, err := GetServerExecutable(version)
+	if err != nil {
+		return err
+	}
+
+	logger.Info("starting server", "executable", executable)
+	return cmd.StreamWithOpts(ctx, cmd.CmdOpts{Cwd: gamePath}, executable)
+}
+
+func HealthCheck(ctx context.Context) error {
+	return nil
+}
+
+func Main(ctx context.Context, opts Opts) error {
+	if err := opts.Validate(); err != nil {
+		return err
+	}
+
+	logger := logging.FromContext(ctx)
+
+	version := opts.Version
+	if version == "" {
+		logger.Info("determining latest version")
+		latestVersion, err := GetLatestVersion(ctx)
+		if err != nil {
+			return err
+		}
+		version = latestVersion
+	}
+
+	c, err := cache.New(&cache.Opts{Path: opts.CachePath})
+	if err != nil {
+		return err
+	}
+
+	if err := DownloadGame(ctx, c, version, opts.GamePath); err != nil {
+		return err
+	}
+
+	if err := InstallMods(ctx, c, opts.GamePath, opts.ModUrls); err != nil {
+		return err
+	}
+
+	if err := c.Finalize(ctx); err != nil {
+		return err
+	}
+
+	if err := InitializeServer(ctx, opts.GamePath, version); err != nil {
+		return err
+	}
+
+	finalPatches, err := GetConfigPatches(version, opts.ConfigPatches)
+	if err != nil {
+		return err
+	}
+
+	if err := ApplyConfigPatches(ctx, opts.GamePath, finalPatches); err != nil {
+		return err
+	}
+
+	dataSubDirs := []string{"user/profiles"}
+	dataSubDirs = append(dataSubDirs, opts.DataSubDirs...)
+	if err := CreateSymlinks(ctx, opts.GamePath, opts.DataPath, dataSubDirs); err != nil {
+		return err
+	}
+
+	SetupSignalHandler(ctx)
+
+	if err := healthcheck.SetupHealthCheck(ctx, ":8880", HealthCheck); err != nil {
+		return err
+	}
+
+	return RunServer(ctx, opts.GamePath, version)
+}
+
+func main() {
+	cliutil.Run(
+		cliutil.Setup(&cli.Command{
+			Flags: []cli.Flag{
+				&cli.StringFlag{
+					Name:    "cache-path",
+					Value:   "/cache",
+					Sources: cli.EnvVars("CACHE_PATH"),
+				},
+				&cli.StringFlag{
+					Name:    "config-patches",
+					Sources: cli.EnvVars("CONFIG_PATCHES"),
+				},
+				&cli.StringFlag{
+					Name:    "data-path",
+					Value:   "/data",
+					Sources: cli.EnvVars("DATA_PATH"),
+				},
+				&cli.StringSliceFlag{
+					Name:    "data-subdirs",
+					Sources: cli.EnvVars("DATA_SUBDIRS"),
+				},
+				&cli.StringFlag{
+					Name:    "game-path",
+					Value:   "/game",
+					Sources: cli.EnvVars("GAME_PATH"),
+				},
+				&cli.StringSliceFlag{
+					Name:    "mod-urls",
+					Sources: cli.EnvVars("MOD_URLS"),
+				},
+				&cli.StringFlag{
+					Name:    "version",
+					Sources: cli.EnvVars("VERSION"),
+				},
+				&cli.BoolFlag{
+					Name:    "debug",
+					Sources: cli.EnvVars("DEBUG"),
+				},
+			},
+			Action: func(ctx context.Context, c *cli.Command) error {
+				debug := c.Bool("debug")
+				configPatches := make(map[string][]jsonpatch.Patch)
+				if patchesJson := c.String("config-patches"); patchesJson != "" {
+					if err := json.Unmarshal([]byte(patchesJson), &configPatches); err != nil {
+						return fmt.Errorf("failed to parse config patches: %w", err)
+					}
+				}
+
+				err := Main(ctx, Opts{
+					CachePath:     c.String("cache-path"),
+					ConfigPatches: configPatches,
+					DataPath:      c.String("data-path"),
+					DataSubDirs:   c.StringSlice("data-sub-dirs"),
+					GamePath:      c.String("game-path"),
+					ModUrls:       c.StringSlice("mod-urls"),
+					Version:       c.String("version"),
+				})
+				if err != nil && debug {
+					time.Sleep(0)
+				}
+				return err
+			},
+		}),
+	)
+}

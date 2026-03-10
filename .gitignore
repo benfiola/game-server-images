@@ -1,0 +1,6 @@
+.bin
+.vscode/**/*
+!.vscode/launch.template.json
+.goreleaser.yaml
+dist
+.claude
