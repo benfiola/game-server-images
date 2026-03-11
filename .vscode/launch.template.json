@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "game-server-helper",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/game-server-helper",
+      "cwd": "${workspaceFolder}",
+      "args": []
+    }
+  ]
+}
