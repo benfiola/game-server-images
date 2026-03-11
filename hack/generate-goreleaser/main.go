@@ -7,88 +7,126 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/goccy/go-yaml"
 )
 
 const (
 	outputFile     = ".goreleaser.yaml"
-	cmdGlob        = "cmd/*/main.go"
-	dockerfileGlob = "images/*/.goreleaser.Dockerfile"
-	registryURL    = "ghcr.io/benfiola/"
+	dockerfileGlob = "images/*/Dockerfile"
+	registryURL    = "ghcr.io/benfiola"
 )
 
-type Command struct {
-	ID   string
-	Path string
+type ImageConfig struct {
+	Platforms []string `json:"platforms,omitempty"`
 }
 
-type Image struct {
-	Name string
-	Path string
+type GoreleaserTarget struct {
+	Dockerfile     string
+	Binary         string
+	Name           string
+	ImagePlatforms []string
 }
 
-func findCommands() ([]Command, error) {
-	mainFiles, err := filepath.Glob(cmdGlob)
-	if err != nil {
-		return nil, fmt.Errorf("glob %q: %w", cmdGlob, err)
+func (gt GoreleaserTarget) GetBinaryArchs() []string {
+	archMap := map[string]bool{}
+	for _, platform := range gt.ImagePlatforms {
+		parts := strings.Split(platform, "/")
+		arch := parts[len(parts)-1]
+		archMap[arch] = true
 	}
-
-	commands := make([]Command, len(mainFiles))
-	for i, mainFile := range mainFiles {
-		id := filepath.Base(filepath.Dir(mainFile))
-		commands[i] = Command{ID: id, Path: mainFile}
+	archs := []string{}
+	for arch := range archMap {
+		archs = append(archs, arch)
 	}
-	return commands, nil
+	return archs
 }
 
-func findImages() ([]Image, error) {
+func (gt GoreleaserTarget) GetImageUrl() string {
+	return fmt.Sprintf("%s/{{ .ProjectName }}/%s", registryURL, gt.Name)
+}
+
+func findTargets() ([]GoreleaserTarget, error) {
 	dockerfiles, err := filepath.Glob(dockerfileGlob)
 	if err != nil {
 		return nil, fmt.Errorf("glob %q: %w", dockerfileGlob, err)
 	}
 
-	images := make([]Image, len(dockerfiles))
+	targets := make([]GoreleaserTarget, len(dockerfiles))
 	for i, dockerfile := range dockerfiles {
+		parent := filepath.Dir(dockerfile)
+
+		path := filepath.Join(parent, "entrypoint.go")
+		binary := ""
+		if _, err := os.Stat(path); err == nil {
+			binary = path
+		} else if !os.IsNotExist(err) {
+			return nil, err
+		}
+
+		path = filepath.Join(parent, "image.yaml")
+		imagePlatforms := []string{"linux/amd64", "linux/arm64"}
+		if _, err := os.Stat(path); err == nil {
+			configBytes, err := os.ReadFile(path)
+			if err != nil {
+				return nil, err
+			}
+
+			config := ImageConfig{}
+			if err := yaml.Unmarshal(configBytes, &config); err != nil {
+				return nil, err
+			}
+
+			if len(config.Platforms) != 0 {
+				imagePlatforms = config.Platforms
+			}
+		} else if !os.IsNotExist(err) {
+			return nil, err
+		}
+
 		name := filepath.Base(filepath.Dir(dockerfile))
-		images[i] = Image{Name: name, Path: dockerfile}
+		targets[i] = GoreleaserTarget{Dockerfile: dockerfile, Binary: binary, Name: name, ImagePlatforms: imagePlatforms}
 	}
-	return images, nil
+	return targets, nil
 }
 
-func buildReleaseFooter(images []Image) string {
-	if len(images) == 0 {
+func buildReleaseFooter(targets []GoreleaserTarget) string {
+	if len(targets) == 0 {
 		return ""
 	}
 
 	footer := "**Docker Images:**\n"
-	for _, img := range images {
-		imageURL := fmt.Sprintf("%s{{ .ProjectName }}/%s", registryURL, img.Name)
-		footer += fmt.Sprintf("- `%s:{{ .Version }}`\n", imageURL)
+	for _, target := range targets {
+		footer += fmt.Sprintf("- `%s:{{ .Version }}`\n", target.GetImageUrl())
 	}
 	return footer
 }
 
-func buildConfig(commands []Command, images []Image) map[string]any {
-	builds := make([]map[string]any, len(commands))
-	for i, cmd := range commands {
-		builds[i] = map[string]any{
-			"id":      cmd.ID,
-			"goos":    []string{"linux"},
-			"goarch":  []string{"arm64", "amd64"},
-			"ldflags": []string{"-X {{ .ModulePath }}/internal/info.Version={{ .Version }}"},
-			"main":    cmd.Path,
+func buildConfig(targets []GoreleaserTarget) map[string]any {
+	builds := []map[string]any{}
+	for _, target := range targets {
+		if target.Binary == "" {
+			continue
 		}
+		build := map[string]any{
+			"binary":  target.Name,
+			"id":      target.Name,
+			"goos":    []string{"linux"},
+			"goarch":  target.GetBinaryArchs(),
+			"ldflags": []string{"-X {{ .ModulePath }}/internal/info.Version={{ .Version }}"},
+			"main":    target.Binary,
+		}
+		builds = append(builds, build)
 	}
 
-	dockers := make([]map[string]any, len(images))
-	for i, img := range images {
+	dockers := make([]map[string]any, len(targets))
+	for i, target := range targets {
 		dockers[i] = map[string]any{
-			"dockerfile": img.Path,
-			"images": []string{
-				fmt.Sprintf("%s{{ .ProjectName }}/%s", registryURL, img.Name),
-			},
-			"platforms": []string{"linux/arm64", "linux/amd64"},
+			"dockerfile": target.Dockerfile,
+			"id":         target.Name,
+			"images":     []string{target.GetImageUrl()},
+			"platforms":  target.ImagePlatforms,
 			"tags": []string{
 				"{{ .Version }}",
 			},
@@ -100,7 +138,7 @@ func buildConfig(commands []Command, images []Image) map[string]any {
 		"project_name": "game-server-images",
 		"builds":       builds,
 		"release": map[string]any{
-			"footer": buildReleaseFooter(images),
+			"footer": buildReleaseFooter(targets),
 		},
 		"changelog": map[string]any{
 			"use": "github-native",
@@ -110,24 +148,18 @@ func buildConfig(commands []Command, images []Image) map[string]any {
 }
 
 func main() {
-	commands, err := findCommands()
+	targets, err := findTargets()
 	if err != nil {
-		log.Fatalf("find commands: %v", err)
+		log.Fatalf("find targets: %v", err)
 	}
-	slices.SortFunc(commands, func(a, b Command) int { return cmp.Compare(a.Path, b.Path) })
+	slices.SortFunc(targets, func(a, b GoreleaserTarget) int { return cmp.Compare(a.Dockerfile, b.Dockerfile) })
 
-	images, err := findImages()
-	if err != nil {
-		log.Fatalf("find images: %v", err)
-	}
-	slices.SortFunc(images, func(a, b Image) int { return cmp.Compare(a.Path, b.Path) })
-
-	config := buildConfig(commands, images)
+	config := buildConfig(targets)
 
 	header := []byte("# this was auto-generated by ./hack/generate-goreleaser - do not edit\n")
 	configBytes, err := yaml.Marshal(&config)
 	if err != nil {
-		log.Fatalf("marshal config: %w", err)
+		log.Fatalf("marshal config: %v", err)
 	}
 
 	output := append(header, configBytes...)
