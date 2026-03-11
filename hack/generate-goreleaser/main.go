@@ -57,7 +57,7 @@ func findTargets() ([]GoreleaserTarget, error) {
 	for i, dockerfile := range dockerfiles {
 		parent := filepath.Dir(dockerfile)
 
-		path := filepath.Join(parent, "entrypoint.go")
+		path := filepath.Join(parent, "main.go")
 		binary := ""
 		if _, err := os.Stat(path); err == nil {
 			binary = path
