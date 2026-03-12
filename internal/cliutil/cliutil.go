@@ -24,6 +24,7 @@ func Setup(command *cli.Command) *cli.Command {
 		},
 	}
 	command.Flags = append(command.Flags, flags...)
+
 	before := command.Before
 	command.Before = func(ctx context.Context, c *cli.Command) (context.Context, error) {
 		logFormat := c.String("log-format")
@@ -40,8 +41,9 @@ func Setup(command *cli.Command) *cli.Command {
 		sctx := logging.WithLogger(ctx, logger)
 		if before != nil {
 			return before(sctx, c)
+		} else {
+			return sctx, nil
 		}
-		return sctx, nil
 	}
 
 	command.Version = info.Version
