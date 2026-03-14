@@ -2,11 +2,14 @@ package cache
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/benfiola/game-server-images/internal/logging"
 )
 
 type Opts struct {
@@ -29,8 +32,14 @@ func New(opts *Opts) (*Cache, error) {
 	}, nil
 }
 
+func (c *Cache) normalizeKey(key string) string {
+	hash := sha256.Sum256([]byte(key))
+	return fmt.Sprintf("%x", hash)
+}
+
 func (c *Cache) getCachePath(key string) string {
-	return filepath.Join(c.Path, fmt.Sprintf("%s.squashfs", key))
+	normalizedKey := c.normalizeKey(key)
+	return filepath.Join(c.Path, fmt.Sprintf("%s.squashfs", normalizedKey))
 }
 
 func (c *Cache) getKey(cachePath string) string {
@@ -79,6 +88,8 @@ func (c *Cache) Put(ctx context.Context, key string, inputPath string) error {
 }
 
 func (c *Cache) Finalize(ctx context.Context) error {
+	logger := logging.FromContext(ctx)
+
 	paths, err := filepath.Glob(fmt.Sprintf("%s/*.squashfs", c.Path))
 	if err != nil {
 		return fmt.Errorf("failed to read cache directory: %w", err)
@@ -87,6 +98,7 @@ func (c *Cache) Finalize(ctx context.Context) error {
 	for _, path := range paths {
 		key := c.getKey(path)
 		if !c.AccessedKeys[key] {
+			logger.Debug("removing unushed cache entry", "key", key)
 			if err := os.Remove(path); err != nil {
 				return fmt.Errorf("failed to clean up stale cache entry %q: %w", key, err)
 			}

@@ -2,7 +2,6 @@ package datatransform
 
 import (
 	"encoding/json"
-	"fmt"
 
 	jsonpatch "github.com/evanphx/json-patch/v5"
 )
@@ -41,29 +40,4 @@ func ApplyPatches(original any, patches []Patch, patched any) error {
 	}
 
 	return nil
-}
-
-func MergeShallow(items ...map[string]any) map[string]any {
-	merged := items[0]
-
-	for _, item := range items[1:] {
-		patches := []Patch{}
-		for key, value := range item {
-			op := "add"
-			if _, ok := merged[key]; ok {
-				op = "replace"
-			}
-
-			patch := Patch{
-				Op:    op,
-				Path:  fmt.Sprintf("/%s", key),
-				Value: value,
-			}
-			patches = append(patches, patch)
-		}
-
-		ApplyPatches(merged, patches, &merged)
-	}
-
-	return merged
 }

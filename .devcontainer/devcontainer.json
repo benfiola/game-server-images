@@ -2,7 +2,7 @@
   "customizations": {
     "vscode": {
       "extensions": [
-        "continue.continue",
+        "anthropic.claude-code",
         "esbenp.prettier-vscode",
         "golang.go",
         "rohit-gohri.format-code-action"
@@ -31,6 +31,6 @@
   "image": "ubuntu:latest",
   "postCreateCommand": ".devcontainer/post-create.sh",
   "mounts": [
-    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.continue,target=/root/.continue,type=bind,consistency=cached"
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.claude,target=/root/.claude,type=bind,consistency=cached"
   ]
 }

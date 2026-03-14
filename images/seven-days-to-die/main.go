@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -23,26 +26,47 @@ import (
 )
 
 const (
-	AppId              = 294420
-	DepotId            = 294422
-	TelnetAddr         = "localhost:8081"
-	WebDashboardPort   = "8080"
-	ReadyPattern       = "Press 'help' to get a list of all commands. Press 'exit' to end session."
-	ReadTimeout        = 5 * time.Second
-	ConnectionAttempts = 10
-	ConnectionDelay    = 1 * time.Second
+	AppId                    = 294420
+	DepotId                  = 294422
+	WebDashboardPort         = 8080
+	TelnetPort               = 8081
+	TelnetReadyPattern       = "Press 'help' to get a list of all commands. Press 'exit' to end session."
+	TelnetReadTimeout        = 10 * time.Second
+	TelnetConnectionAttempts = 10
+	TelnetConnectionDelay    = 1 * time.Second
+	TelnetConnectionBackoff  = 2.0
+	TelmetMaxConnectionDelay = 30 * time.Second
 )
 
 type Opts struct {
-	CachePath          string
-	DataPath           string
-	GamePath           string
-	ManifestId         int
-	DeleteDefaultMods  bool
-	ModUrls            []string
-	RootUrls           []string
-	AutoRestart        *time.Duration
-	AutoRestartMessage string
+	CachePath         string
+	DataPath          string
+	GamePath          string
+	ManifestId        int
+	DeleteDefaultMods bool
+	Mods              []Mod
+	AutoRestart       time.Duration
+}
+
+func (o *Opts) Validate() error {
+	if o.CachePath == "" {
+		return fmt.Errorf("cache path is required")
+	}
+	if o.DataPath == "" {
+		return fmt.Errorf("data path is required")
+	}
+	if o.GamePath == "" {
+		return fmt.Errorf("game path is required")
+	}
+	if o.ManifestId <= 0 {
+		return fmt.Errorf("manifest id must be positive")
+	}
+	return nil
+}
+
+type Mod struct {
+	Url  string
+	Root bool
 }
 
 type ServerSettings map[string]string
@@ -58,9 +82,14 @@ type XmlServerProperty struct {
 }
 
 func (ss ServerSettings) Xml() XmlServerSettings {
-	xss := XmlServerSettings{Properties: []XmlServerProperty{}}
-	for name, value := range ss {
-		xss.Properties = append(xss.Properties, XmlServerProperty{Name: name, Value: value})
+	xss := XmlServerSettings{Properties: make([]XmlServerProperty, 0, len(ss))}
+	keys := make([]string, 0, len(ss))
+	for name := range ss {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+	for _, name := range keys {
+		xss.Properties = append(xss.Properties, XmlServerProperty{Name: name, Value: ss[name]})
 	}
 	return xss
 }
@@ -80,98 +109,62 @@ type TelnetConn struct {
 
 func (conn *TelnetConn) ReadUntilPattern(pattern string, timeout time.Duration) error {
 	logger := logging.FromContext(conn.ctx)
-	start := time.Now()
-	data := ""
-	buf := make([]byte, 128)
+	if err := conn.netConn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return err
+	}
+
+	var data strings.Builder
+	buf := make([]byte, 4096)
 
 	for {
-		now := time.Now()
-		if now.Sub(start) >= timeout {
-			return fmt.Errorf("timed out reading until pattern: %s", pattern)
-		}
-
-		remaining := timeout - now.Sub(start)
-		if err := conn.netConn.SetReadDeadline(time.Now().Add(remaining)); err != nil {
-			return err
-		}
-
 		read, err := conn.netConn.Read(buf)
 		if err != nil {
-			return err
+			if err == io.EOF {
+				return fmt.Errorf("connection closed before finding pattern: %s", pattern)
+			}
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				return fmt.Errorf("timed out reading until pattern: %s", pattern)
+			}
+			return fmt.Errorf("failed to read from telnet: %w", err)
 		}
 
-		data += string(buf[:read])
-		logger.Debug("read from telnet", "pattern", pattern, "data", strings.TrimSpace(data))
+		data.Write(buf[:read])
+		logger.Debug("read from telnet", "pattern", pattern, "data", strings.TrimSpace(data.String()))
 
-		if strings.Contains(data, pattern) {
+		if strings.Contains(data.String(), pattern) {
 			return nil
 		}
 	}
 }
 
-type dialServerCb func(*TelnetConn) error
-
-func DialServer(ctx context.Context, cb dialServerCb) error {
-	logger := logging.FromContext(ctx)
-	logger.Info("dialing server", "addr", TelnetAddr)
-
-	var nconn net.Conn
-	var err error
-
-	for attempt := 0; attempt < ConnectionAttempts; attempt++ {
-		nconn, err = net.Dial("tcp", TelnetAddr)
-		if err == nil {
-			break
+func MergeServerSettings(items ...ServerSettings) ServerSettings {
+	result := make(ServerSettings)
+	for _, item := range items {
+		for k, v := range item {
+			result[k] = v
 		}
-		logger.Debug("connection attempt failed", "attempt", attempt+1, "error", err)
-		time.Sleep(ConnectionDelay)
 	}
-
-	if err != nil {
-		return fmt.Errorf("failed to connect to server after %d attempts: %w", ConnectionAttempts, err)
-	}
-
-	conn := &TelnetConn{ctx: ctx, netConn: nconn}
-	defer conn.netConn.Close()
-
-	if err := conn.ReadUntilPattern(ReadyPattern, ReadTimeout); err != nil {
-		return err
-	}
-
-	return cb(conn)
+	return result
 }
 
-func ShutdownServer(ctx context.Context) error {
-	logger := logging.FromContext(ctx)
-	logger.Info("shutting down server")
-	return DialServer(ctx, func(conn *TelnetConn) error {
-		_, err := conn.netConn.Write([]byte("shutdown\n"))
-		return err
-	})
-}
+func CombineMods(modUrls []string, rootUrls []string) []Mod {
+	mods := make([]Mod, 0, len(modUrls)+len(rootUrls))
 
-func StartServer(ctx context.Context, gameDir string, configPath string) error {
-	logger := logging.FromContext(ctx)
-	logger.Info("starting server", "config", configPath)
-
-	env := append(os.Environ(), "LD_LIBRARY_PATH=.")
-	cmdArgs := []string{
-		"./7DaysToDieServer.x86_64",
-		"-batchmode",
-		fmt.Sprintf("-configfile=%s", configPath),
-		"-dedicated",
-		"-logfile", "-",
-		"-nographics",
-		"-quit",
+	for _, url := range modUrls {
+		mods = append(mods, Mod{Url: url, Root: false})
 	}
 
-	return cmd.StreamWithOpts(ctx, cmd.CmdOpts{Cwd: gameDir, Env: env}, cmdArgs...)
+	for _, url := range rootUrls {
+		mods = append(mods, Mod{Url: url, Root: true})
+	}
+
+	return mods
 }
 
 func GetDefaultServerSettings(ctx context.Context, gameDir string) (ServerSettings, error) {
 	logger := logging.FromContext(ctx)
 	filePath := filepath.Join(gameDir, "serverconfig.xml")
-	logger.Info("reading default server settings", "path", filePath)
+	logger.Debug("reading default server settings", "path", filePath)
 
 	data, err := os.ReadFile(filePath)
 	if err != nil {
@@ -204,19 +197,32 @@ func GetEnvServerSettings(ctx context.Context) ServerSettings {
 	return data
 }
 
-func MergeServerSettings(items ...ServerSettings) ServerSettings {
-	result := make(ServerSettings)
-	for _, item := range items {
-		for k, v := range item {
-			result[k] = v
-		}
+func GetServerSettings(ctx context.Context, gamePath string, dataPath string) (ServerSettings, error) {
+	defaultSettings, err := GetDefaultServerSettings(ctx, gamePath)
+	if err != nil {
+		return nil, err
 	}
-	return result
+
+	envSettings := GetEnvServerSettings(ctx)
+
+	return MergeServerSettings(
+		defaultSettings,
+		ServerSettings{
+			"WebDashboardEnabled": "true",
+		},
+		envSettings,
+		ServerSettings{
+			"TelnetEnabled":    "true",
+			"TelnetPort":       strconv.Itoa(TelnetPort),
+			"UserDataFolder":   dataPath,
+			"WebDashboardPort": strconv.Itoa(WebDashboardPort),
+		},
+	), nil
 }
 
 func WriteServerSettings(ctx context.Context, settings ServerSettings, path string) error {
 	logger := logging.FromContext(ctx)
-	logger.Info("writing server settings", "path", path)
+	logger.Debug("writing server settings", "path", path)
 
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
@@ -230,52 +236,6 @@ func WriteServerSettings(ctx context.Context, settings ServerSettings, path stri
 
 	if err := os.WriteFile(path, append([]byte(xml.Header), data...), 0644); err != nil {
 		return fmt.Errorf("failed to write server settings: %w", err)
-	}
-
-	return nil
-}
-
-func InstallMods(ctx context.Context, path string, mods ...string) error {
-	logger := logging.FromContext(ctx)
-
-	if err := os.MkdirAll(path, 0755); err != nil {
-		return err
-	}
-
-	for _, modURL := range mods {
-		modName := filepath.Base(modURL)
-		logger.Info("installing mod", "path", path, "mod", modURL)
-
-		tempDir := filepath.Join(path, ".tmp")
-		if err := os.MkdirAll(tempDir, 0755); err != nil {
-			return err
-		}
-		defer os.RemoveAll(tempDir)
-
-		downloadPath := filepath.Join(tempDir, modName)
-		if err := http.Download(ctx, modURL, downloadPath); err != nil {
-			return fmt.Errorf("failed to download mod: %w", err)
-		}
-
-		if err := archive.Extract(ctx, downloadPath, path); err != nil {
-			return fmt.Errorf("failed to extract mod: %w", err)
-		}
-	}
-
-	return nil
-}
-
-func DeleteDefaultMods(ctx context.Context, gameDir string) error {
-	logger := logging.FromContext(ctx)
-	logger.Info("deleting default mods")
-
-	modsPath := filepath.Join(gameDir, "Mods")
-	if err := os.RemoveAll(modsPath); err != nil {
-		return fmt.Errorf("failed to remove mods directory: %w", err)
-	}
-
-	if err := os.MkdirAll(modsPath, 0755); err != nil {
-		return fmt.Errorf("failed to recreate mods directory: %w", err)
 	}
 
 	return nil
@@ -302,10 +262,143 @@ func DownloadGame(ctx context.Context, c *cache.Cache, manifestId int, path stri
 
 	serverBin := filepath.Join(path, "7DaysToDieServer.x86_64")
 	if err := os.Chmod(serverBin, 0755); err != nil {
-		logger.Warn("failed to chmod server binary", "path", serverBin, "error", err)
+		logger.Error("failed to chmod server binary", "path", serverBin, "error", err)
 	}
 
 	return nil
+}
+
+func InstallMods(ctx context.Context, cache *cache.Cache, gamePath string, mods ...Mod) error {
+	logger := logging.FromContext(ctx)
+
+	for _, mod := range mods {
+		var installPath string
+		if mod.Root {
+			installPath = gamePath
+		} else {
+			installPath = filepath.Join(gamePath, "Mods")
+		}
+
+		if err := os.MkdirAll(installPath, 0755); err != nil {
+			return err
+		}
+
+		modName := filepath.Base(mod.Url)
+		key := fmt.Sprintf("mod-%s", mod.Url)
+		logger.Info("installing mod", "path", installPath, "mod", mod.Url, "root", mod.Root)
+
+		if !cache.Exists(ctx, key) {
+			tempDir := filepath.Join(installPath, ".tmp")
+			if err := os.MkdirAll(tempDir, 0755); err != nil {
+				return err
+			}
+
+			downloadPath := filepath.Join(tempDir, modName)
+			if err := http.Download(ctx, mod.Url, downloadPath); err != nil {
+				return fmt.Errorf("failed to download mod: %w", err)
+			}
+
+			if err := archive.Extract(ctx, downloadPath, installPath); err != nil {
+				return fmt.Errorf("failed to extract mod: %w", err)
+			}
+
+			if err := cache.Put(ctx, key, installPath); err != nil {
+				return err
+			}
+
+			os.RemoveAll(tempDir)
+		} else {
+			logger.Info("using cached mod", "mod", mod.Url)
+			if err := cache.Get(ctx, key, installPath); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func DeleteDefaultMods(ctx context.Context, gameDir string) error {
+	logger := logging.FromContext(ctx)
+	logger.Info("deleting default mods")
+
+	modsPath := filepath.Join(gameDir, "Mods")
+	if err := os.RemoveAll(modsPath); err != nil {
+		return fmt.Errorf("failed to remove mods directory: %w", err)
+	}
+
+	if err := os.MkdirAll(modsPath, 0755); err != nil {
+		return fmt.Errorf("failed to recreate mods directory: %w", err)
+	}
+
+	return nil
+}
+
+type dialServerCb func(*TelnetConn) error
+
+func DialServer(ctx context.Context, cb dialServerCb) error {
+	logger := logging.FromContext(ctx)
+	addr := fmt.Sprintf("localhost:%d", TelnetPort)
+	logger.Debug("dialing server", "addr", addr)
+
+	var nconn net.Conn
+	var err error
+	backoffDelay := TelnetConnectionDelay
+
+	for attempt := range TelnetConnectionAttempts {
+		nconn, err = net.Dial("tcp", addr)
+		if err == nil {
+			break
+		}
+		logger.Debug("connection attempt failed", "attempt", attempt+1, "delay", backoffDelay, "error", err)
+		time.Sleep(backoffDelay)
+
+		backoffDelay = min(
+			time.Duration(float64(backoffDelay)*TelnetConnectionBackoff),
+			TelmetMaxConnectionDelay,
+		)
+	}
+
+	if err != nil {
+		return fmt.Errorf("failed to connect to server after %d attempts: %w", TelnetConnectionAttempts, err)
+	}
+
+	conn := &TelnetConn{ctx: ctx, netConn: nconn}
+	defer conn.netConn.Close()
+
+	if err := conn.ReadUntilPattern(TelnetReadyPattern, TelnetReadTimeout); err != nil {
+		return err
+	}
+
+	return cb(conn)
+}
+
+func StartServer(ctx context.Context, gameDir string, configPath string) error {
+	logger := logging.FromContext(ctx)
+	logger.Info("starting server", "config", configPath)
+
+	env := append(os.Environ(), "LD_LIBRARY_PATH=.")
+	cmdArgs := []string{
+		"./7DaysToDieServer.x86_64",
+		"-batchmode",
+		fmt.Sprintf("-configfile=%s", configPath),
+		"-dedicated",
+		"-logfile", "-",
+		"-nographics",
+		"-quit",
+	}
+
+	return cmd.StreamWithOpts(ctx, cmd.CmdOpts{Cwd: gameDir, Env: env}, cmdArgs...)
+}
+
+func ShutdownServer(ctx context.Context) error {
+	logger := logging.FromContext(ctx)
+	logger.Info("shutting down server")
+	return DialServer(ctx, func(conn *TelnetConn) error {
+		cmd := "shutdown\n"
+		_, err := conn.netConn.Write([]byte(cmd))
+		return err
+	})
 }
 
 func SetupSignalHandler(ctx context.Context) {
@@ -322,18 +415,37 @@ func SetupSignalHandler(ctx context.Context) {
 
 func HealthCheck(ctx context.Context) error {
 	logger := logging.FromContext(ctx)
+	logger.Debug("performing health check")
 	err := DialServer(ctx, func(conn *TelnetConn) error {
 		return nil
 	})
 	if err != nil {
 		logger.Error("health check failed", "error", err)
-	} else {
-		logger.Info("health check passed")
+		return err
 	}
-	return err
+	logger.Debug("health check passed")
+	return nil
+}
+
+func SetupAutoRestart(ctx context.Context, autoRestart time.Duration) {
+	go func() {
+		time.Sleep(autoRestart - time.Minute)
+		message := "Restarting server in 1 minute"
+		DialServer(ctx, func(conn *TelnetConn) error {
+			cmd := fmt.Sprintf("say \"%s\"\n", message)
+			_, err := conn.netConn.Write([]byte(cmd))
+			return err
+		})
+		time.Sleep(time.Minute)
+		ShutdownServer(ctx)
+	}()
 }
 
 func Main(ctx context.Context, opts Opts) error {
+	if err := opts.Validate(); err != nil {
+		return err
+	}
+
 	c, err := cache.New(&cache.Opts{Path: opts.CachePath})
 	if err != nil {
 		return err
@@ -343,69 +455,34 @@ func Main(ctx context.Context, opts Opts) error {
 		return err
 	}
 
-	if err := c.Finalize(ctx); err != nil {
-		return err
-	}
-
 	if opts.DeleteDefaultMods {
 		if err := DeleteDefaultMods(ctx, opts.GamePath); err != nil {
 			return err
 		}
 	}
 
-	if len(opts.RootUrls) > 0 {
-		if err := InstallMods(ctx, opts.GamePath, opts.RootUrls...); err != nil {
+	if len(opts.Mods) > 0 {
+		if err := InstallMods(ctx, c, opts.GamePath, opts.Mods...); err != nil {
 			return err
 		}
 	}
 
-	modsDir := filepath.Join(opts.GamePath, "Mods")
-	if len(opts.ModUrls) > 0 {
-		if err := InstallMods(ctx, modsDir, opts.ModUrls...); err != nil {
-			return err
-		}
+	if err := c.Finalize(ctx); err != nil {
+		return err
 	}
 
-	defaultSettings, err := GetDefaultServerSettings(ctx, opts.GamePath)
+	serverSettings, err := GetServerSettings(ctx, opts.GamePath, opts.DataPath)
 	if err != nil {
 		return err
 	}
 
-	envSettings := GetEnvServerSettings(ctx)
-
-	mergedSettings := MergeServerSettings(
-		defaultSettings,
-		ServerSettings{
-			"WebDashboardEnabled": "true",
-		},
-		envSettings,
-		ServerSettings{
-			"TelnetEnabled":    "true",
-			"TelnetPort":       "8081",
-			"UserDataFolder":   opts.DataPath,
-			"WebDashboardPort": WebDashboardPort,
-		},
-	)
-
 	configPath := filepath.Join(os.TempDir(), "serverconfig.xml")
-	if err := WriteServerSettings(ctx, mergedSettings, configPath); err != nil {
+	if err := WriteServerSettings(ctx, serverSettings, configPath); err != nil {
 		return err
 	}
 
-	if opts.AutoRestart != nil {
-		go func() {
-			time.Sleep(*opts.AutoRestart - time.Minute)
-			message := opts.AutoRestartMessage
-			if message == "" {
-				message = "Restarting server in 1 minute"
-			}
-			DialServer(ctx, func(conn *TelnetConn) error {
-				_, err := conn.netConn.Write([]byte(fmt.Sprintf("say \"%s\"\n", message)))
-				return err
-			})
-			time.Sleep(time.Minute)
-			ShutdownServer(ctx)
-		}()
+	if opts.AutoRestart > 0 {
+		SetupAutoRestart(ctx, opts.AutoRestart)
 	}
 
 	SetupSignalHandler(ctx)
@@ -453,29 +530,18 @@ func main() {
 					Name:    "auto-restart",
 					Sources: cli.EnvVars("AUTO_RESTART"),
 				},
-				&cli.StringFlag{
-					Name:    "auto-restart-message",
-					Value:   "Restarting server in 1 minute",
-					Sources: cli.EnvVars("AUTO_RESTART_MESSAGE"),
-				},
 			},
 			Action: func(ctx context.Context, c *cli.Command) error {
-				autoRestart := c.Duration("auto-restart")
-				var autoRestartPtr *time.Duration
-				if autoRestart > 0 {
-					autoRestartPtr = &autoRestart
-				}
+				mods := CombineMods(c.StringSlice("mod-urls"), c.StringSlice("root-urls"))
 
 				return Main(ctx, Opts{
-					CachePath:          c.String("cache-path"),
-					DataPath:           c.String("data-path"),
-					GamePath:           c.String("game-path"),
-					ManifestId:         c.Int("manifest-id"),
-					DeleteDefaultMods:  c.Bool("delete-default-mods"),
-					ModUrls:            c.StringSlice("mod-urls"),
-					RootUrls:           c.StringSlice("root-urls"),
-					AutoRestart:        autoRestartPtr,
-					AutoRestartMessage: c.String("auto-restart-message"),
+					CachePath:         c.String("cache-path"),
+					DataPath:          c.String("data-path"),
+					GamePath:          c.String("game-path"),
+					ManifestId:        c.Int("manifest-id"),
+					DeleteDefaultMods: c.Bool("delete-default-mods"),
+					Mods:              mods,
+					AutoRestart:       c.Duration("auto-restart"),
 				})
 			},
 		}),
