@@ -28,3 +28,19 @@ $$(bin)/$(1): $$(bin)/bsdtar $$(bin)/curl | $$(bin)
 	rm -rf $$(bin)/.extract $$(bin)/.archive.tar.gz 
 endef
 
+define tool-from-zip
+install-tools: install-tools__$(1)
+.PHONY: install-tools__$(1)
+install-tools__$(1): $$(bin)/$(1)
+$$(bin)/$(1): $$(bin)/bsdtar $$(bin)/curl | $$(bin)
+	# clean temp paths
+	rm -rf $$(bin)/.extract $$(bin)/.archive.zip && mkdir -p $$(bin)/.extract
+	# download $(1) archive
+	curl -o $$(bin)/.archive.zip -fsSL $(2)
+	# extract $(1)
+	bsdtar xvf $$(bin)/.archive.zip --strip-components $(3) -C $$(bin)/.extract
+	# move $(1)
+	mv $$(bin)/.extract/$(1) $$(bin)/$(1)
+	# clean temp paths
+	rm -rf $$(bin)/.extract $$(bin)/.archive.zip 
+endef

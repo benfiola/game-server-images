@@ -1,3 +1,4 @@
+DEPOTDOWNLOADER_VERSION ?= 3.4.0
 GORELEASER_VERSION ?= 2.12.7
 SVU_VERSION ?= 3.3.0
 
@@ -53,6 +54,13 @@ install-tools:
 $(eval $(call tool-from-apt,bsdtar,libarchive-tools))
 $(eval $(call tool-from-apt,curl,curl))
 
+depotdownloader_arch := $(arch)
+ifeq ($(depotdownloader_arch),amd64)
+	depotdownloader_arch := x64
+endif
+depotdownloader_url := https://github.com/SteamRE/DepotDownloader/releases/download/DepotDownloader_$(DEPOTDOWNLOADER_VERSION)/DepotDownloader-linux-$(depotdownloader_arch).zip
+$(eval $(call tool-from-zip,DepotDownloader,$(depotdownloader_url),0))
+
 goreleaser_arch := $(arch)
 ifeq ($(goreleaser_arch),amd64)
 	goreleaser_arch := x86_64
@@ -69,3 +77,7 @@ generate: generate__goreleaser
 .PHONY: generate__goreleaser
 generate__goreleaser:
 	go run $(project)/hack/generate-goreleaser
+
+$(bin):
+	# make bin folder
+	mkdir -p $(bin)

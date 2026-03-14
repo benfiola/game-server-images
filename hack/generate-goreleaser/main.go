@@ -124,19 +124,23 @@ func buildConfig(targets []GoreleaserTarget) map[string]any {
 	for i, target := range targets {
 		dockers[i] = map[string]any{
 			"dockerfile": target.Dockerfile,
-			"id":         target.Name,
-			"images":     []string{target.GetImageUrl()},
-			"platforms":  target.ImagePlatforms,
-			"tags": []string{
-				"{{ .Version }}",
+			"extra_files": []string{
+				"Makefile", "Makefile.include.mk",
 			},
+			"id":        target.Name,
+			"images":    []string{target.GetImageUrl()},
+			"platforms": target.ImagePlatforms,
+			"tags":      []string{"{{ .Version }}"},
 		}
 	}
 
 	return map[string]any{
 		"version":      2,
 		"project_name": "game-server-images",
-		"builds":       builds,
+		"archives": []map[string]any{{
+			"allow_different_binary_count": true,
+		}},
+		"builds": builds,
 		"release": map[string]any{
 			"footer": buildReleaseFooter(targets),
 		},
