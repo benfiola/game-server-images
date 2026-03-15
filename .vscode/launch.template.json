@@ -2,11 +2,20 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "game-server-helper",
+      "name": "seven-days-to-die",
       "type": "go",
       "request": "launch",
       "mode": "auto",
-      "program": "${workspaceFolder}/cmd/game-server-helper",
+      "program": "${workspaceFolder}/images/seven-days-to-die/main.go",
+      "cwd": "${workspaceFolder}",
+      "args": []
+    },
+    {
+      "name": "single-player-tarkov",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/images/single-player-tarkov/main.go",
       "cwd": "${workspaceFolder}",
       "args": []
     }

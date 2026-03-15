@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"syscall"
 	"time"
 
@@ -45,49 +46,92 @@ func (o *Opts) Validate() error {
 	if o.GamePath == "" {
 		return fmt.Errorf("game path is required")
 	}
-	if o.Version == "" {
-		return fmt.Errorf("version is required")
-	}
 	return nil
 }
 
-func BuildOrFetchGame(ctx context.Context, c *cache.Cache, version string, tempDir string, gamePath string) error {
+var semverRegex = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
+
+func GetLatestVersion(ctx context.Context) (string, error) {
 	logger := logging.FromContext(ctx)
+	logger.Debug("fetching tags from GitHub")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get("https://api.github.com/repos/sp-tarkov/server/tags?per_page=100")
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch tags: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
+	}
+
+	type Tag struct {
+		Name string `json:"name"`
+	}
+
+	var tags []Tag
+	if err := json.NewDecoder(resp.Body).Decode(&tags); err != nil {
+		return "", fmt.Errorf("failed to parse tags: %w", err)
+	}
+
+	for _, tag := range tags {
+		if semverRegex.MatchString(tag.Name) {
+			return tag.Name, nil
+		}
+	}
+
+	return "", fmt.Errorf("failed to find latest version")
+}
+
+func BuildOrFetchGame(ctx context.Context, c *cache.Cache, version string, gamePath string) error {
+	logger := logging.FromContext(ctx)
+
+	if version == "" {
+		logger.Info("determining latest version")
+		latestVersion, err := GetLatestVersion(ctx)
+		if err != nil {
+			return err
+		}
+		version = latestVersion
+	}
+
 	cacheKey := fmt.Sprintf("spt-%s", version)
 
 	if !c.Exists(ctx, cacheKey) {
 		logger.Info("building SPT from source", "version", version)
 
-		repoDir := filepath.Join(tempDir, "repo")
-		if err := os.MkdirAll(repoDir, 0755); err != nil {
-			return fmt.Errorf("failed to create repo dir: %w", err)
+		tempDir, err := os.MkdirTemp("", "spt-source-*")
+		if err != nil {
+			return err
 		}
+		defer os.RemoveAll(tempDir)
 
 		logger.Debug("cloning repository", "url", "https://github.com/sp-tarkov/server")
-		if err := cmd.Stream(ctx, "git", "clone", "--depth", "1", "--branch", version, "https://github.com/sp-tarkov/server", repoDir); err != nil {
+		if err := cmd.Stream(ctx, "git", "clone", "--depth", "1", "--branch", version, "https://github.com/sp-tarkov/server", tempDir); err != nil {
 			return fmt.Errorf("failed to clone repository: %w", err)
 		}
 
 		logger.Debug("setting up git LFS")
-		if err := cmd.StreamWithOpts(ctx, cmd.CmdOpts{Cwd: repoDir}, "git", "lfs", "install"); err != nil {
+		if err := cmd.StreamWithOpts(ctx, cmd.CmdOpts{Cwd: tempDir}, "git", "lfs", "install"); err != nil {
 			return fmt.Errorf("failed to install git LFS: %w", err)
 		}
 
-		if err := cmd.StreamWithOpts(ctx, cmd.CmdOpts{Cwd: repoDir}, "git", "lfs", "pull"); err != nil {
+		if err := cmd.StreamWithOpts(ctx, cmd.CmdOpts{Cwd: tempDir}, "git", "lfs", "pull"); err != nil {
 			return fmt.Errorf("failed to pull git LFS assets: %w", err)
 		}
 
 		logger.Debug("installing npm dependencies")
-		if err := cmd.StreamWithOpts(ctx, cmd.CmdOpts{Cwd: repoDir}, "npm", "install"); err != nil {
+		if err := cmd.StreamWithOpts(ctx, cmd.CmdOpts{Cwd: tempDir}, "npm", "install"); err != nil {
 			return fmt.Errorf("failed to install dependencies: %w", err)
 		}
 
 		logger.Debug("building SPT")
-		if err := cmd.StreamWithOpts(ctx, cmd.CmdOpts{Cwd: repoDir}, "npm", "run", "build:release"); err != nil {
+		if err := cmd.StreamWithOpts(ctx, cmd.CmdOpts{Cwd: tempDir}, "npm", "run", "build:release"); err != nil {
 			return fmt.Errorf("failed to build SPT: %w", err)
 		}
 
-		buildPath := filepath.Join(repoDir, "build")
+		buildPath := filepath.Join(tempDir, "build")
 		if err := os.Rename(buildPath, gamePath); err != nil {
 			return err
 		}
@@ -301,7 +345,7 @@ func Main(ctx context.Context, opts Opts) error {
 		return err
 	}
 
-	if err := BuildOrFetchGame(ctx, cache, opts.Version, os.TempDir(), opts.GamePath); err != nil {
+	if err := BuildOrFetchGame(ctx, cache, opts.Version, opts.GamePath); err != nil {
 		return err
 	}
 
@@ -350,7 +394,7 @@ func main() {
 				},
 				&cli.StringFlag{
 					Name:    "game-path",
-					Value:   "/spt",
+					Value:   "/game",
 					Sources: cli.EnvVars("GAME_PATH"),
 				},
 				&cli.StringSliceFlag{
@@ -358,9 +402,8 @@ func main() {
 					Sources: cli.EnvVars("MOD_URLS"),
 				},
 				&cli.StringFlag{
-					Name:     "version",
-					Required: true,
-					Sources:  cli.EnvVars("SPT_VERSION"),
+					Name:    "version",
+					Sources: cli.EnvVars("SPT_VERSION"),
 				},
 			},
 			Action: func(ctx context.Context, c *cli.Command) error {

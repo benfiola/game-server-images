@@ -59,9 +59,6 @@ func (o *Opts) Validate() error {
 	if o.GamePath == "" {
 		return fmt.Errorf("game path is required")
 	}
-	if o.ManifestId <= 0 {
-		return fmt.Errorf("manifest id must be positive")
-	}
 	return nil
 }
 
@@ -234,6 +231,16 @@ func WriteServerSettings(ctx context.Context, settings ServerSettings, path stri
 
 func DownloadGame(ctx context.Context, c *cache.Cache, manifestId int, path string) error {
 	logger := logging.FromContext(ctx)
+
+	if manifestId == 0 {
+		logger.Info("determining latest manifest id", "app", AppId, "depot", DepotId)
+		foundManifestId, err := steam.GetLatestManifestId(ctx, AppId, DepotId)
+		if err != nil {
+			return err
+		}
+		manifestId = foundManifestId
+	}
+
 	key := fmt.Sprintf("sdtd-%d", manifestId)
 
 	if !c.Exists(ctx, key) {
@@ -241,6 +248,7 @@ func DownloadGame(ctx context.Context, c *cache.Cache, manifestId int, path stri
 		if err := steam.Download(ctx, AppId, DepotId, manifestId, path); err != nil {
 			return err
 		}
+		logger.Info("caching game", "key", key)
 		if err := c.Put(ctx, key, path); err != nil {
 			return err
 		}
@@ -483,7 +491,7 @@ func main() {
 				},
 				&cli.StringFlag{
 					Name:    "game-path",
-					Value:   "/sdtd",
+					Value:   "/game",
 					Sources: cli.EnvVars("GAME_PATH"),
 				},
 				&cli.IntFlag{

@@ -38,8 +38,7 @@ func (c *Cache) normalizeKey(key string) string {
 }
 
 func (c *Cache) getCachePath(key string) string {
-	normalizedKey := c.normalizeKey(key)
-	return filepath.Join(c.Path, fmt.Sprintf("%s.squashfs", normalizedKey))
+	return filepath.Join(c.Path, fmt.Sprintf("%s.squashfs", key))
 }
 
 func (c *Cache) getKey(cachePath string) string {
@@ -55,11 +54,12 @@ func (c *Cache) runCommand(ctx context.Context, cmd ...string) error {
 }
 
 func (c *Cache) Exists(ctx context.Context, key string) bool {
-	_, err := os.Stat(c.getCachePath(key))
+	_, err := os.Stat(c.getCachePath(c.normalizeKey(key)))
 	return err == nil
 }
 
 func (c *Cache) Get(ctx context.Context, key string, outputPath string) error {
+	key = c.normalizeKey(key)
 	cachePath := c.getCachePath(key)
 
 	if _, err := os.Stat(cachePath); err != nil {
@@ -76,6 +76,7 @@ func (c *Cache) Get(ctx context.Context, key string, outputPath string) error {
 }
 
 func (c *Cache) Put(ctx context.Context, key string, inputPath string) error {
+	key = c.normalizeKey(key)
 	cachePath := c.getCachePath(key)
 
 	if err := c.runCommand(ctx, "mksquashfs", inputPath, cachePath); err != nil {

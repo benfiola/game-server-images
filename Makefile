@@ -53,6 +53,10 @@ install-tools:
 
 $(eval $(call tool-from-apt,bsdtar,libarchive-tools))
 $(eval $(call tool-from-apt,curl,curl))
+$(eval $(call tool-from-apt,git,git))
+$(eval $(call tool-from-apt,git-lfs,git-lfs))
+$(eval $(call tool-from-apt,mksquashfs,squashfs-tools))
+$(eval $(call tool-from-apt,unsquashfs,squashfs-tools))
 
 depotdownloader_arch := $(arch)
 ifeq ($(depotdownloader_arch),amd64)
