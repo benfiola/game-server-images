@@ -19,6 +19,7 @@ import (
 	"github.com/benfiola/game-server-images/internal/cache"
 	"github.com/benfiola/game-server-images/internal/cliutil"
 	"github.com/benfiola/game-server-images/internal/cmd"
+	"github.com/benfiola/game-server-images/internal/datatransform"
 	"github.com/benfiola/game-server-images/internal/http"
 	"github.com/benfiola/game-server-images/internal/logging"
 	"github.com/benfiola/game-server-images/internal/steam"
@@ -137,16 +138,6 @@ func (conn *TelnetConn) ReadUntilPattern(pattern string, timeout time.Duration) 
 	}
 }
 
-func MergeServerSettings(items ...ServerSettings) ServerSettings {
-	result := make(ServerSettings)
-	for _, item := range items {
-		for k, v := range item {
-			result[k] = v
-		}
-	}
-	return result
-}
-
 func CombineMods(modUrls []string, rootUrls []string) []Mod {
 	mods := make([]Mod, 0, len(modUrls)+len(rootUrls))
 
@@ -205,7 +196,7 @@ func GetServerSettings(ctx context.Context, gamePath string, dataPath string) (S
 
 	envSettings := GetEnvServerSettings(ctx)
 
-	return MergeServerSettings(
+	return datatransform.ShallowMerge(
 		defaultSettings,
 		ServerSettings{
 			"WebDashboardEnabled": "true",
@@ -411,20 +402,6 @@ func SetupSignalHandler(ctx context.Context) {
 		logger.Info("received signal", "signal", sig)
 		ShutdownServer(ctx)
 	}()
-}
-
-func HealthCheck(ctx context.Context) error {
-	logger := logging.FromContext(ctx)
-	logger.Debug("performing health check")
-	err := DialServer(ctx, func(conn *TelnetConn) error {
-		return nil
-	})
-	if err != nil {
-		logger.Error("health check failed", "error", err)
-		return err
-	}
-	logger.Debug("health check passed")
-	return nil
 }
 
 func SetupAutoRestart(ctx context.Context, autoRestart time.Duration) {

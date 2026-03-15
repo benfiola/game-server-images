@@ -2,6 +2,7 @@ package datatransform
 
 import (
 	"encoding/json"
+	"maps"
 
 	jsonpatch "github.com/evanphx/json-patch/v5"
 )
@@ -40,4 +41,12 @@ func ApplyPatches(original any, patches []Patch, patched any) error {
 	}
 
 	return nil
+}
+
+func ShallowMerge[K comparable, V any](items ...map[K]V) map[K]V {
+	result := make(map[K]V)
+	for _, item := range items {
+		maps.Copy(result, item)
+	}
+	return result
 }
