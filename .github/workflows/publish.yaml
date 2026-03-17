@@ -37,7 +37,7 @@ jobs:
           elif [[ "${BRANCH_NAME}" == "main" ]]; then
             VERSION="$(svu next)"
           else
-            VERSION="$(svu next --prerelease "alpha.${GITHUB_RUN_NUMBER}" --metadata "${BRANCH_NAME}")"
+            VERSION="$(svu next --prerelease "alpha-${BRANCH_NAME}.${GITHUB_RUN_NUMBER}")"
           fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
       - name: create git tag
