@@ -1,5 +1,6 @@
 FROM debian:bookworm-slim
 
+ARG TARGETPLATFORM
 ARG TARGETARCH
 
 RUN <<EOF
