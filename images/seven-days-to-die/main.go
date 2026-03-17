@@ -7,12 +7,10 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/benfiola/game-server-images/internal/archive"
@@ -20,8 +18,10 @@ import (
 	"github.com/benfiola/game-server-images/internal/cliutil"
 	"github.com/benfiola/game-server-images/internal/cmd"
 	"github.com/benfiola/game-server-images/internal/datatransform"
+	"github.com/benfiola/game-server-images/internal/healthcheck"
 	"github.com/benfiola/game-server-images/internal/http"
 	"github.com/benfiola/game-server-images/internal/logging"
+	"github.com/benfiola/game-server-images/internal/signalhandler"
 	"github.com/benfiola/game-server-images/internal/steam"
 	"github.com/urfave/cli/v3"
 )
@@ -156,12 +156,12 @@ func GetDefaultServerSettings(ctx context.Context, gameDir string) (ServerSettin
 
 	data, err := os.ReadFile(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read server config: %w", err)
+		return nil, err
 	}
 
 	xss := &XmlServerSettings{}
 	if err := xml.Unmarshal(data, xss); err != nil {
-		return nil, fmt.Errorf("failed to parse server config: %w", err)
+		return nil, err
 	}
 
 	return xss.Map(), nil
@@ -219,11 +219,11 @@ func WriteServerSettings(ctx context.Context, settings ServerSettings, path stri
 	xmlSettings := settings.Xml()
 	data, err := xml.MarshalIndent(xmlSettings, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to marshal server settings: %w", err)
+		return err
 	}
 
 	if err := os.WriteFile(path, append([]byte(xml.Header), data...), 0644); err != nil {
-		return fmt.Errorf("failed to write server settings: %w", err)
+		return err
 	}
 
 	return nil
@@ -234,11 +234,11 @@ func DownloadGame(ctx context.Context, c *cache.Cache, manifestId int, path stri
 
 	if manifestId == 0 {
 		logger.Info("determining latest manifest id", "app", AppId, "depot", DepotId)
-		foundManifestId, err := steam.GetLatestManifestId(ctx, AppId, DepotId)
+		latestManifestId, err := steam.GetLatestManifestId(ctx, AppId, DepotId)
 		if err != nil {
 			return err
 		}
-		manifestId = foundManifestId
+		manifestId = latestManifestId
 	}
 
 	key := fmt.Sprintf("sdtd-%d", manifestId)
@@ -279,7 +279,7 @@ func InstallMods(ctx context.Context, cache *cache.Cache, gamePath string, mods 
 		}
 
 		if err := os.MkdirAll(installPath, 0755); err != nil {
-			return err
+			return fmt.Errorf("failed to create install path %s: %w", installPath, err)
 		}
 
 		modName := filepath.Base(mod.Url)
@@ -289,7 +289,7 @@ func InstallMods(ctx context.Context, cache *cache.Cache, gamePath string, mods 
 		if !cache.Exists(ctx, key) {
 			tempDir := filepath.Join(installPath, ".tmp")
 			if err := os.MkdirAll(tempDir, 0755); err != nil {
-				return err
+				return fmt.Errorf("failed to create temp directory: %w", err)
 			}
 
 			downloadPath := filepath.Join(tempDir, modName)
@@ -302,7 +302,7 @@ func InstallMods(ctx context.Context, cache *cache.Cache, gamePath string, mods 
 			}
 
 			if err := cache.Put(ctx, key, installPath); err != nil {
-				return err
+				return fmt.Errorf("failed to cache mod: %w", err)
 			}
 
 			os.RemoveAll(tempDir)
@@ -323,11 +323,11 @@ func DeleteDefaultMods(ctx context.Context, gameDir string) error {
 
 	modsPath := filepath.Join(gameDir, "Mods")
 	if err := os.RemoveAll(modsPath); err != nil {
-		return fmt.Errorf("failed to remove mods directory: %w", err)
+		return err
 	}
 
 	if err := os.MkdirAll(modsPath, 0755); err != nil {
-		return fmt.Errorf("failed to recreate mods directory: %w", err)
+		return err
 	}
 
 	return nil
@@ -359,7 +359,7 @@ func DialServer(ctx context.Context, cb dialServerCb) error {
 	}
 
 	if err != nil {
-		return fmt.Errorf("failed to connect to server after %d attempts: %w", TelnetConnectionAttempts, err)
+		return fmt.Errorf("failed to connect to telnet after %d attempts: %w", TelnetConnectionAttempts, err)
 	}
 
 	conn := &TelnetConn{ctx: ctx, netConn: nconn}
@@ -400,18 +400,6 @@ func ShutdownServer(ctx context.Context) error {
 	})
 }
 
-func SetupSignalHandler(ctx context.Context) {
-	logger := logging.FromContext(ctx)
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
-
-	go func() {
-		sig := <-sigChan
-		logger.Info("received signal", "signal", sig)
-		ShutdownServer(ctx)
-	}()
-}
-
 func SetupAutoRestart(ctx context.Context, autoRestart time.Duration) {
 	go func() {
 		time.Sleep(autoRestart - time.Minute)
@@ -424,6 +412,19 @@ func SetupAutoRestart(ctx context.Context, autoRestart time.Duration) {
 		time.Sleep(time.Minute)
 		ShutdownServer(ctx)
 	}()
+}
+
+func HealthCheck(ctx context.Context) error {
+	logger := logging.FromContext(ctx)
+
+	healthy := false
+	err := DialServer(ctx, func(conn *TelnetConn) error {
+		healthy = true
+		return nil
+	})
+
+	logger.Debug("health check", "healthy", healthy)
+	return err
 }
 
 func Main(ctx context.Context, opts Opts) error {
@@ -470,7 +471,11 @@ func Main(ctx context.Context, opts Opts) error {
 		SetupAutoRestart(ctx, opts.AutoRestart)
 	}
 
-	SetupSignalHandler(ctx)
+	signalhandler.Setup(ctx, func(ctx context.Context, sig os.Signal) { ShutdownServer(ctx) })
+
+	if err := healthcheck.SetupHealthCheck(ctx, ":8880", HealthCheck); err != nil {
+		return err
+	}
 
 	return StartServer(ctx, opts.GamePath, configPath)
 }
