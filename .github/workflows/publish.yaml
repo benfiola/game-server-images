@@ -11,6 +11,7 @@ jobs:
       group: ${{github.workflow}}-create-tag
     outputs:
       version: ${{ steps.version.outputs.version }}
+      build_docs: ${{ steps.version.outputs.build_docs }}
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -32,14 +33,17 @@ jobs:
         run: |
           BRANCH_NAME="${GITHUB_REF#refs/heads/}"
           BRANCH_NAME="$(echo "${BRANCH_NAME}" | sed 's/[^a-zA-Z0-9.-]/-/g')"
+          BUILD_DOCS="false"
           if [[ "${BRANCH_NAME}" == "dev" ]]; then
             VERSION="$(svu next --prerelease "rc.${GITHUB_RUN_NUMBER}")"
           elif [[ "${BRANCH_NAME}" == "main" ]]; then
             VERSION="$(svu next)"
+            BUILD_DOCS="true"
           else
             VERSION="$(svu next --prerelease "alpha-${BRANCH_NAME}.${GITHUB_RUN_NUMBER}")"
           fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "build_docs=${BUILD_DOCS}" >> $GITHUB_OUTPUT
       - name: create git tag
         run: |
           git tag "${{ steps.version.outputs.version }}"
@@ -88,6 +92,7 @@ jobs:
   build-docs:
     needs: [create-tag]
     runs-on: ubuntu-latest
+    if: needs.create-tag.outputs.build_docs == 'true'
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -108,6 +113,7 @@ jobs:
   publish-docs:
     needs: [build-docs]
     runs-on: ubuntu-latest
+    if: needs.create-tag.outputs.build_docs == 'true'
     permissions:
       id-token: write
       pages: write
