@@ -358,14 +358,24 @@ func MergeConfigPatches(patchMaps ...map[string][]jsonpatch.Patch) map[string][]
 	return result
 }
 
-func GetConfigPatches(userPatches map[string][]jsonpatch.Patch) map[string][]jsonpatch.Patch {
+func GetConfigPatches(version string, userPatches map[string][]jsonpatch.Patch) (map[string][]jsonpatch.Patch, error) {
+	major, err := GetMajorVersion(version)
+	if err != nil {
+		return nil, err
+	}
+
+	configsPath := "SPT_Data/Server/configs"
+	if major >= 4 {
+		configsPath = "SPT_Data/configs"
+	}
+
 	patchOverrides := map[string][]jsonpatch.Patch{
-		"SPT_Data/Server/configs/http.json": {
+		fmt.Sprintf("%s/http.json", configsPath): {
 			{Op: "replace", Path: "/ip", Value: "0.0.0.0"},
 			{Op: "replace", Path: "/backendIp", Value: "0.0.0.0"},
 		},
 	}
-	return MergeConfigPatches(userPatches, patchOverrides)
+	return MergeConfigPatches(userPatches, patchOverrides), nil
 }
 
 func GetServerExecutable(version string) (string, error) {
@@ -434,7 +444,11 @@ func Main(ctx context.Context, opts Opts) error {
 		return err
 	}
 
-	finalPatches := GetConfigPatches(opts.ConfigPatches)
+	finalPatches, err := GetConfigPatches(version, opts.ConfigPatches)
+	if err != nil {
+		return err
+	}
+
 	if err := ApplyConfigPatches(ctx, opts.GamePath, finalPatches); err != nil {
 		return err
 	}
