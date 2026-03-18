@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -242,7 +243,12 @@ func WaitForServerReady(ctx context.Context) error {
 	maxDelay := 30 * time.Second
 
 	for attempt := range maxRetries {
-		client := &http.Client{Timeout: 5 * time.Second}
+		client := &http.Client{
+			Timeout: 5 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			},
+		}
 		resp, err := client.Get(serverUrl)
 
 		if err == nil && resp.StatusCode == http.StatusOK {
@@ -251,12 +257,15 @@ func WaitForServerReady(ctx context.Context) error {
 			return nil
 		}
 
-		if resp != nil {
+		if err != nil {
+			logger.Debug("server health check failed", "attempt", attempt+1, "error", err)
+		} else if resp.StatusCode != http.StatusOK {
+			logger.Debug("server returned non-OK status", "attempt", attempt+1, "status", resp.StatusCode)
 			resp.Body.Close()
 		}
 
 		if attempt < maxRetries-1 {
-			logger.Debug("server is not ready, retrying", "attempt", attempt+1, "delay", delay)
+			logger.Debug("retrying server readiness check", "attempt", attempt+1, "nextDelay", delay)
 			select {
 			case <-time.After(delay):
 				delay = time.Duration(float64(delay) * 1.5)
