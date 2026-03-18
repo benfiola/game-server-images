@@ -22,11 +22,9 @@ apt install -y \
   zlib1g
 arch="${TARGETARCH}"
 if [ "${arch}" = "amd64" ]; then
-  arch="x86"
+  arch="x64"
 fi
-url="https://builds.dotnet.microsoft.com/dotnet/Sdk/9.0.312/dotnet-sdk-9.0.312-linux-${arch}.tar.gz"
-echo "${url}"
-curl -fsSL -o /tmp/archive.tar.gz "${url}"
+curl -fsSL -o /tmp/archive.tar.gz "https://builds.dotnet.microsoft.com/dotnet/Sdk/9.0.312/dotnet-sdk-9.0.312-linux-${arch}.tar.gz"
 mkdir -p /usr/share/dotnet
 tar -C /usr/share/dotnet -xvzf /tmp/archive.tar.gz
 rm -rf /tmp/archive.tar.gz
