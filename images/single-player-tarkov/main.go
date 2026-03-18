@@ -17,9 +17,9 @@ import (
 	"github.com/benfiola/game-server-images/internal/cache"
 	"github.com/benfiola/game-server-images/internal/cliutil"
 	"github.com/benfiola/game-server-images/internal/cmd"
-	"github.com/benfiola/game-server-images/internal/datatransform"
 	"github.com/benfiola/game-server-images/internal/healthcheck"
 	httputil "github.com/benfiola/game-server-images/internal/http"
+	"github.com/benfiola/game-server-images/internal/jsonpatch"
 	"github.com/benfiola/game-server-images/internal/logging"
 	"github.com/urfave/cli/v3"
 )
@@ -34,7 +34,7 @@ type Opts struct {
 	GamePath      string
 	Version       string
 	ModUrls       []string
-	ConfigPatches map[string][]datatransform.Patch
+	ConfigPatches map[string][]jsonpatch.Patch
 }
 
 func (o *Opts) Validate() error {
@@ -188,7 +188,7 @@ func InstallMods(ctx context.Context, modUrls []string, gamePath string, c *cach
 	return nil
 }
 
-func ApplyConfigPatches(ctx context.Context, gamePath string, patches map[string][]datatransform.Patch) error {
+func ApplyConfigPatches(ctx context.Context, gamePath string, patches map[string][]jsonpatch.Patch) error {
 	logger := logging.FromContext(ctx)
 
 	if len(patches) == 0 {
@@ -213,7 +213,7 @@ func ApplyConfigPatches(ctx context.Context, gamePath string, patches map[string
 		}
 
 		var patched map[string]interface{}
-		if err := datatransform.ApplyPatches(original, filePatch, &patched); err != nil {
+		if err := jsonpatch.ApplyPatches(original, filePatch, &patched); err != nil {
 			return fmt.Errorf("failed to apply patches to %s: %w", filePath, err)
 		}
 
@@ -233,7 +233,7 @@ func ApplyConfigPatches(ctx context.Context, gamePath string, patches map[string
 }
 
 func WaitForServerReady(ctx context.Context) error {
-	serverUrl := fmt.Sprintf("http://localhost:%d", ServerPort)
+	serverUrl := fmt.Sprintf("https://localhost:%d", ServerPort)
 	logger := logging.FromContext(ctx)
 	logger.Info("waiting for server to be ready", "url", serverUrl)
 
@@ -339,6 +339,26 @@ func SetupSignalHandler(ctx context.Context) {
 	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
 }
 
+func MergeConfigPatches(patchMaps ...map[string][]jsonpatch.Patch) map[string][]jsonpatch.Patch {
+	result := make(map[string][]jsonpatch.Patch)
+	for _, patchMap := range patchMaps {
+		for key, patches := range patchMap {
+			result[key] = append(result[key], patches...)
+		}
+	}
+	return result
+}
+
+func GetConfigPatches(userPatches map[string][]jsonpatch.Patch) map[string][]jsonpatch.Patch {
+	patchOverrides := map[string][]jsonpatch.Patch{
+		"SPT_Data/Server/configs/http.json": {
+			{Op: "replace", Path: "/ip", Value: "0.0.0.0"},
+			{Op: "replace", Path: "/backendIp", Value: "0.0.0.0"},
+		},
+	}
+	return MergeConfigPatches(userPatches, patchOverrides)
+}
+
 func GetServerExecutable(version string) (string, error) {
 	major, err := GetMajorVersion(version)
 	if err != nil {
@@ -374,7 +394,6 @@ func Main(ctx context.Context, opts Opts) error {
 
 	logger := logging.FromContext(ctx)
 
-	// Determine the final version to use
 	version := opts.Version
 	if version == "" {
 		logger.Info("determining latest version")
@@ -406,7 +425,8 @@ func Main(ctx context.Context, opts Opts) error {
 		return err
 	}
 
-	if err := ApplyConfigPatches(ctx, opts.GamePath, opts.ConfigPatches); err != nil {
+	finalPatches := GetConfigPatches(opts.ConfigPatches)
+	if err := ApplyConfigPatches(ctx, opts.GamePath, finalPatches); err != nil {
 		return err
 	}
 
@@ -456,7 +476,7 @@ func main() {
 				},
 			},
 			Action: func(ctx context.Context, c *cli.Command) error {
-				configPatches := make(map[string][]datatransform.Patch)
+				configPatches := make(map[string][]jsonpatch.Patch)
 				if patchesJson := c.String("config-patches"); patchesJson != "" {
 					if err := json.Unmarshal([]byte(patchesJson), &configPatches); err != nil {
 						return fmt.Errorf("failed to parse config patches: %w", err)

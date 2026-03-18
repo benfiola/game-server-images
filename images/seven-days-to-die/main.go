@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -17,7 +18,6 @@ import (
 	"github.com/benfiola/game-server-images/internal/cache"
 	"github.com/benfiola/game-server-images/internal/cliutil"
 	"github.com/benfiola/game-server-images/internal/cmd"
-	"github.com/benfiola/game-server-images/internal/datatransform"
 	"github.com/benfiola/game-server-images/internal/healthcheck"
 	"github.com/benfiola/game-server-images/internal/http"
 	"github.com/benfiola/game-server-images/internal/logging"
@@ -185,6 +185,14 @@ func GetEnvServerSettings(ctx context.Context) ServerSettings {
 	return data
 }
 
+func MergeServerSettings(items ...map[string]string) map[string]string {
+	result := make(map[string]string)
+	for _, item := range items {
+		maps.Copy(result, item)
+	}
+	return result
+}
+
 func GetServerSettings(ctx context.Context, gamePath string, dataPath string) (ServerSettings, error) {
 	defaultSettings, err := GetDefaultServerSettings(ctx, gamePath)
 	if err != nil {
@@ -193,7 +201,7 @@ func GetServerSettings(ctx context.Context, gamePath string, dataPath string) (S
 
 	envSettings := GetEnvServerSettings(ctx)
 
-	return datatransform.ShallowMerge(
+	return MergeServerSettings(
 		defaultSettings,
 		ServerSettings{
 			"WebDashboardEnabled": "true",
