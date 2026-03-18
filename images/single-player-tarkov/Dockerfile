@@ -20,7 +20,9 @@ apt install -y \
   libssl3 \
   libstdc++6 \
   zlib1g
-curl -fsSL -o /tmp/archive.tar.gz "https://builds.dotnet.microsoft.com/dotnet/Sdk/9.0.312/dotnet-sdk-9.0.312-linux-${TARGETARCH}.tar.gz"
+url="https://builds.dotnet.microsoft.com/dotnet/Sdk/9.0.312/dotnet-sdk-9.0.312-linux-${TARGETARCH}.tar.gz"
+echo "${url}"
+curl -fsSL -o /tmp/archive.tar.gz "${url}"
 mkdir -p /usr/share/dotnet
 tar -C /usr/share/dotnet -xvzf /tmp/archive.tar.gz
 rm -rf /tmp/archive.tar.gz
