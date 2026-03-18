@@ -8,6 +8,10 @@ set -e
 
 apt update
 
+apt -y install \
+  libarchive-tools \
+  squashfs-tools
+
 apt install -y curl
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 apt install -y nodejs

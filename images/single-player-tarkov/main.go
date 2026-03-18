@@ -96,26 +96,16 @@ func DownloadGame(ctx context.Context, c *cache.Cache, version string, gamePath 
 	cacheKey := fmt.Sprintf("spt-%s", version)
 
 	if !c.Exists(ctx, cacheKey) {
-		major, err := GetMajorVersion(version)
-		if err != nil {
-			return err
+		arch := runtime.GOARCH
+		switch arch {
+		case "amd64":
+			arch = "amd64"
+		case "arm64":
+			arch = "arm64"
+		default:
+			return fmt.Errorf("unsupported architecture: %s", arch)
 		}
-
-		var downloadURL string
-		if major < 4 {
-			downloadURL = fmt.Sprintf("https://github.com/benfiola/game-server-images-single-player-tarkov/releases/download/%s/spt-%s.tar.gz", version, version)
-		} else {
-			arch := runtime.GOARCH
-			switch arch {
-			case "amd64":
-				arch = "amd64"
-			case "arm64":
-				arch = "arm64"
-			default:
-				return fmt.Errorf("unsupported architecture: %s", arch)
-			}
-			downloadURL = fmt.Sprintf("https://github.com/benfiola/game-server-images-single-player-tarkov/releases/download/%s/spt-%s-%s.tar.gz", version, version, arch)
-		}
+		downloadURL := fmt.Sprintf("https://github.com/benfiola/game-server-images-single-player-tarkov/releases/download/%s/spt-%s-%s.tar.gz", version, version, arch)
 
 		logger.Info("downloading SPT release", "version", version, "url", downloadURL)
 
@@ -462,7 +452,7 @@ func main() {
 				},
 				&cli.StringFlag{
 					Name:    "version",
-					Sources: cli.EnvVars("SPT_VERSION"),
+					Sources: cli.EnvVars("VERSION"),
 				},
 			},
 			Action: func(ctx context.Context, c *cli.Command) error {
