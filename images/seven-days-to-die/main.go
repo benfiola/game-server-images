@@ -275,50 +275,56 @@ func DownloadGame(ctx context.Context, c *cache.Cache, manifestId int, path stri
 	return nil
 }
 
-func InstallMods(ctx context.Context, cache *cache.Cache, gamePath string, mods ...Mod) error {
+func InstallMod(ctx context.Context, c *cache.Cache, gamePath string, mod Mod) error {
 	logger := logging.FromContext(ctx)
 
+	var installPath string
+	if mod.Root {
+		installPath = gamePath
+	} else {
+		installPath = filepath.Join(gamePath, "Mods")
+	}
+
+	key := fmt.Sprintf("mod-%s", mod.Url)
+	logger.Info("installing mod", "path", installPath, "mod", mod.Url)
+
+	if err := os.MkdirAll(installPath, 0755); err != nil {
+		return fmt.Errorf("failed to create install path %s: %w", installPath, err)
+	}
+
+	if !c.Exists(ctx, key) {
+		tempDir, err := os.MkdirTemp("", "sdtd-install-mods-*")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(tempDir)
+
+		downloadPath := filepath.Join(tempDir, filepath.Base(mod.Url))
+		if err := http.Download(ctx, mod.Url, downloadPath); err != nil {
+			return fmt.Errorf("failed to download mod: %w", err)
+		}
+
+		if err := archive.Extract(ctx, downloadPath, installPath); err != nil {
+			return fmt.Errorf("failed to extract mod: %w", err)
+		}
+
+		if err := c.Put(ctx, key, installPath); err != nil {
+			return fmt.Errorf("failed to cache mod: %w", err)
+		}
+	} else {
+		logger.Info("using cached mod", "mod", mod.Url)
+		if err := c.Get(ctx, key, installPath); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func InstallMods(ctx context.Context, c *cache.Cache, gamePath string, mods ...Mod) error {
 	for _, mod := range mods {
-		var installPath string
-		if mod.Root {
-			installPath = gamePath
-		} else {
-			installPath = filepath.Join(gamePath, "Mods")
-		}
-
-		if err := os.MkdirAll(installPath, 0755); err != nil {
-			return fmt.Errorf("failed to create install path %s: %w", installPath, err)
-		}
-
-		modName := filepath.Base(mod.Url)
-		key := fmt.Sprintf("mod-%s", mod.Url)
-		logger.Info("installing mod", "path", installPath, "mod", mod.Url, "root", mod.Root)
-
-		if !cache.Exists(ctx, key) {
-			tempDir := filepath.Join(installPath, ".tmp")
-			if err := os.MkdirAll(tempDir, 0755); err != nil {
-				return fmt.Errorf("failed to create temp directory: %w", err)
-			}
-
-			downloadPath := filepath.Join(tempDir, modName)
-			if err := http.Download(ctx, mod.Url, downloadPath); err != nil {
-				return fmt.Errorf("failed to download mod: %w", err)
-			}
-
-			if err := archive.Extract(ctx, downloadPath, installPath); err != nil {
-				return fmt.Errorf("failed to extract mod: %w", err)
-			}
-
-			if err := cache.Put(ctx, key, installPath); err != nil {
-				return fmt.Errorf("failed to cache mod: %w", err)
-			}
-
-			os.RemoveAll(tempDir)
-		} else {
-			logger.Info("using cached mod", "mod", mod.Url)
-			if err := cache.Get(ctx, key, installPath); err != nil {
-				return err
-			}
+		if err := InstallMod(ctx, c, gamePath, mod); err != nil {
+			return err
 		}
 	}
 
@@ -470,7 +476,13 @@ func Main(ctx context.Context, opts Opts) error {
 		return err
 	}
 
-	configPath := filepath.Join(os.TempDir(), "serverconfig.xml")
+	tempDir, err := os.MkdirTemp("", "sdtd-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tempDir)
+
+	configPath := filepath.Join(tempDir, "serverconfig.xml")
 	if err := WriteServerSettings(ctx, serverSettings, configPath); err != nil {
 		return err
 	}

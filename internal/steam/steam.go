@@ -3,6 +3,7 @@ package steam
 import (
 	"context"
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 
@@ -16,7 +17,13 @@ func Download(ctx context.Context, appId int, depotId int, manifestId int, outpu
 var regexpManifest = regexp.MustCompile(`(?m)^Manifest ([\d]+).*$`)
 
 func GetLatestManifestId(ctx context.Context, appId int, depotId int) (int, error) {
-	output, err := cmd.Capture(ctx, "DepotDownloader", "-app", strconv.Itoa(appId), "-depot", strconv.Itoa(depotId), "-manifest-only")
+	tempdir, err := os.MkdirTemp("", "depotdownloader-*")
+	if err != nil {
+		return 0, err
+	}
+	defer os.RemoveAll(tempdir)
+
+	output, err := cmd.Capture(ctx, "DepotDownloader", "-app", strconv.Itoa(appId), "-depot", strconv.Itoa(depotId), "-manifest-only", "-dir", tempdir)
 	if err != nil {
 		return 0, err
 	}
