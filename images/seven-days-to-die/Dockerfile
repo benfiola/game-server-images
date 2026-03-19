@@ -19,7 +19,7 @@ ADD Makefile.include.mk Makefile.include.mk
 RUN <<EOF
 set -e
 
-make install-tools__DepotDownloader
+BIN=/usr/local/bin make install-tools__DepotDownloader
 rm Makefile Makefile.include.mk
 EOF
 

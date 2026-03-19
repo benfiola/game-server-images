@@ -508,8 +508,8 @@ func main() {
 					Sources: cli.EnvVars("GAME_PATH"),
 				},
 				&cli.IntFlag{
-					Name:     "manifest-id",
-					Sources:  cli.EnvVars("MANIFEST_ID"),
+					Name:    "manifest-id",
+					Sources: cli.EnvVars("MANIFEST_ID"),
 				},
 				&cli.BoolFlag{
 					Name:    "delete-default-mods",
