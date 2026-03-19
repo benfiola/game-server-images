@@ -1,33 +1,42 @@
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim AS depotdownloader_builder
 
 ARG TARGETARCH
-ARG TARGETPLATFORM
 ARG DEPOTDOWNLOADER_VERSION=3.4.0
 
 RUN <<EOF
 set -e
 
 apt -y update
-
-# install tools
 apt -y install \
-  libarchive-tools \
-  squashfs-tools
-
-# install DepotDownloader
+  curl \
+  unzip
 arch="${TARGETARCH}"
 if [ "${arch}" = "amd64" ]; then
   arch="x64"
 fi
-curl -fsSL -o /tmp/archive.tar.gz "https://github.com/SteamRE/DepotDownloader/releases/download/DepotDownloader_${DEPOTDOWNLOADER_VERSION}/DepotDownloader-linux-${arch}.zip"
+echo "https://github.com/SteamRE/DepotDownloader/releases/download/DepotDownloader_${DEPOTDOWNLOADER_VERSION}/DepotDownloader-linux-${arch}.zip"
+curl -fsSL -o /tmp/archive.zip "https://github.com/SteamRE/DepotDownloader/releases/download/DepotDownloader_${DEPOTDOWNLOADER_VERSION}/DepotDownloader-linux-${arch}.zip"
 mkdir -p /tmp/extract
-tar -C /tmp/extract -xvzf /tmp/archive.tar.gz
+unzip -d /tmp/extract /tmp/archive.zip
 mv /tmp/extract/DepotDownloader /usr/local/bin/DepotDownloader
-rm -rf /tmp/archive.tar.gz /tmp/extract
+rm -rf /tmp/archive.zip /tmp/extract
+EOF
 
+FROM debian:bookworm-slim
+
+ARG TARGETPLATFORM
+
+COPY --from=depotdownloader_builder /usr/local/bin/DepotDownloader /usr/local/bin/DepotDownloader
+
+RUN <<EOF
+set -e
+
+apt -y update
+apt -y install \
+  libarchive-tools \
+  squashfs-tools
 rm -rf /var/lib/apt/lists/*
 
-# configure user and directories
 useradd -m -u 1000 game
 mkdir -p /cache /data /game
 chown -R game:game /cache /data /game
