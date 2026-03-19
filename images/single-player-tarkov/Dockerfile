@@ -2,20 +2,25 @@ FROM debian:bookworm-slim
 
 ARG TARGETPLATFORM
 ARG TARGETARCH
+ARG DOTNET_VERSION=9.0.312
 
 RUN <<EOF
 set -e
 
 apt update
 
+# install tools
 apt -y install \
   libarchive-tools \
   squashfs-tools
 
-apt install -y curl
+# install nodejs
+apt -y install \
+  curl
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 apt install -y nodejs
 
+# install dotnet
 apt install -y \
   libc6 \
   libgcc-s1 \
@@ -28,15 +33,15 @@ arch="${TARGETARCH}"
 if [ "${arch}" = "amd64" ]; then
   arch="x64"
 fi
-curl -fsSL -o /tmp/archive.tar.gz "https://builds.dotnet.microsoft.com/dotnet/Sdk/9.0.312/dotnet-sdk-9.0.312-linux-${arch}.tar.gz"
+curl -fsSL -o /tmp/archive.tar.gz "https://builds.dotnet.microsoft.com/dotnet/Sdk/${DOTNET_VERSION}/dotnet-sdk-${DOTNET_VERSION}-linux-${arch}.tar.gz"
 mkdir -p /usr/share/dotnet
 tar -C /usr/share/dotnet -xvzf /tmp/archive.tar.gz
 rm -rf /tmp/archive.tar.gz
 ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet
 
-apt-get clean
 rm -rf /var/lib/apt/lists/*
 
+# configure user and directories
 useradd -m -u 1000 game
 mkdir -p /cache /data /game
 chown -R game:game /cache /data /game
