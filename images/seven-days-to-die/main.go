@@ -509,7 +509,6 @@ func main() {
 				},
 				&cli.IntFlag{
 					Name:     "manifest-id",
-					Required: true,
 					Sources:  cli.EnvVars("MANIFEST_ID"),
 				},
 				&cli.BoolFlag{
