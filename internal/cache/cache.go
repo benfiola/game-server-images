@@ -5,10 +5,10 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/benfiola/game-server-images/internal/cmd"
 	"github.com/benfiola/game-server-images/internal/logging"
 )
 
@@ -45,14 +45,6 @@ func (c *Cache) getKey(cachePath string) string {
 	return strings.TrimSuffix(filepath.Base(cachePath), ".squashfs")
 }
 
-func (c *Cache) runCommand(ctx context.Context, cmd ...string) error {
-	execCmd := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
-	if err := execCmd.Run(); err != nil {
-		return err
-	}
-	return nil
-}
-
 func (c *Cache) Exists(ctx context.Context, key string) bool {
 	_, err := os.Stat(c.getCachePath(c.normalizeKey(key)))
 	return err == nil
@@ -66,7 +58,7 @@ func (c *Cache) Get(ctx context.Context, key string, outputPath string) error {
 		return fmt.Errorf("cache entry not found: %w", err)
 	}
 
-	if err := c.runCommand(ctx, "unsquashfs", "-f", "-d", outputPath, cachePath); err != nil {
+	if _, err := cmd.Capture(ctx, "unsquashfs", "-f", "-d", outputPath, cachePath); err != nil {
 		return fmt.Errorf("failed to extract cache entry: %w", err)
 	}
 
@@ -79,7 +71,7 @@ func (c *Cache) Put(ctx context.Context, key string, inputPath string) error {
 	key = c.normalizeKey(key)
 	cachePath := c.getCachePath(key)
 
-	if err := c.runCommand(ctx, "mksquashfs", inputPath, cachePath); err != nil {
+	if _, err := cmd.Capture(ctx, "mksquashfs", inputPath, cachePath); err != nil {
 		return fmt.Errorf("failed to create cache entry: %w", err)
 	}
 

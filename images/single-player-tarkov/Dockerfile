@@ -10,6 +10,8 @@ FROM debian:bookworm-slim
 
 ARG TARGETPLATFORM
 
+COPY --from=dotnet_downloader /usr/share/dotnet /usr/share/dotnet
+
 RUN <<EOF
 set -e
 
@@ -24,14 +26,12 @@ apt -y install \
   nodejs
 rm -rf /var/lib/apt/lists/*
 
+ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet
+
 useradd -m -u 1000 game
 mkdir -p /cache /data /game
 chown -R game:game /cache /data /game
 EOF
-
-COPY --from=dotnet_downloader /usr/share/dotnet /usr/share/dotnet
-RUN ls -al /usr/share/dotnet
-RUN ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet
 
 COPY $TARGETPLATFORM/single-player-tarkov /usr/local/bin/single-player-tarkov
 
