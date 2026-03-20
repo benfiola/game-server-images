@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+
+	"github.com/benfiola/game-server-images/internal/logging"
 )
 
 type CmdOpts struct {
@@ -18,6 +20,10 @@ func Capture(ctx context.Context, cmd ...string) (string, error) {
 }
 
 func CaptureWithOpts(ctx context.Context, opts CmdOpts, cmd ...string) (string, error) {
+	logger := logging.FromContext(ctx)
+
+	logger.Debug("capture command", "cmd", cmd, "opts", opts)
+
 	command := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
 	var stdout bytes.Buffer
 	command.Stdout = &stdout
@@ -43,6 +49,10 @@ func Stream(ctx context.Context, cmd ...string) error {
 }
 
 func StreamWithOpts(ctx context.Context, opts CmdOpts, cmd ...string) error {
+	logger := logging.FromContext(ctx)
+
+	logger.Debug("stream command", "cmd", cmd, "opts", opts)
+
 	command := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
