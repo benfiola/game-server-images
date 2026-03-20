@@ -58,7 +58,7 @@ func (c *Cache) Get(ctx context.Context, key string, outputPath string) error {
 		return fmt.Errorf("cache entry not found: %w", err)
 	}
 
-	if _, err := cmd.Capture(ctx, "unsquashfs", "-f", "-d", outputPath, cachePath); err != nil {
+	if _, err := cmd.Capture(ctx, "unsquashfs", "-no-xattrs", "-follow-symlinks", "-dest", outputPath, cachePath); err != nil {
 		return fmt.Errorf("failed to extract cache entry: %w", err)
 	}
 

@@ -7,5 +7,5 @@ import (
 )
 
 func Extract(ctx context.Context, source string, dest string) error {
-	return cmd.Stream(ctx, "bsdtar", "-xf", source, "-C", dest)
+	return cmd.Stream(ctx, "bsdtar", "-x", "-f", source, "-C", dest)
 }
