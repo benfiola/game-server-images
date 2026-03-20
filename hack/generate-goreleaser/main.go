@@ -123,11 +123,12 @@ func buildConfig(targets []GoreleaserTarget) map[string]any {
 	dockers := make([]map[string]any, len(targets))
 	for i, target := range targets {
 		dockers[i] = map[string]any{
-			"dockerfile": target.Dockerfile,
-			"id":         target.Name,
-			"images":     []string{target.GetImageUrl()},
-			"platforms":  target.ImagePlatforms,
-			"tags":       []string{"{{ .Version }}"},
+			"dockerfile":  target.Dockerfile,
+			"extra_files": []string{"scripts"},
+			"id":          target.Name,
+			"images":      []string{target.GetImageUrl()},
+			"platforms":   target.ImagePlatforms,
+			"tags":        []string{"{{ .Version }}"},
 		}
 	}
 

@@ -3,40 +3,17 @@ FROM debian:bookworm-slim AS dotnet_downloader
 ARG TARGETARCH
 ARG DOTNET_VERSION=9.0.312
 
-RUN <<EOF
-set -e
-
-apt -y update
-apt install -y \
-  curl \
-  libc6 \
-  libgcc-s1 \
-  libgssapi-krb5-2 \
-  libicu72 \
-  libssl3 \
-  libstdc++6 \
-  zlib1g
-arch="${TARGETARCH}"
-if [ "${arch}" = "amd64" ]; then
-  arch="x64"
-fi
-curl -fsSL -o /tmp/archive.tar.gz "https://builds.dotnet.microsoft.com/dotnet/Sdk/${DOTNET_VERSION}/dotnet-sdk-${DOTNET_VERSION}-linux-${arch}.tar.gz"
-mkdir -p /usr/share/dotnet
-tar -C /usr/share/dotnet -xzf /tmp/archive.tar.gz
-rm -rf /tmp/archive.tar.gz
-EOF
+COPY scripts/install-dotnet.sh /usr/local/bin/install-dotnet.sh
+RUN /usr/local/bin/install-dotnet.sh "${DOTNET_VERSION}" /usr/share/dotnet
 
 FROM debian:bookworm-slim
 
 ARG TARGETPLATFORM
 
-COPY --from=dotnet_downloader /usr/share/dotnet /usr/share/dotnet
-
 RUN <<EOF
 set -e
 
-ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet
-
+export DEBIAN_FRONTEND=noninteractive
 apt -y update
 apt -y install curl
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
@@ -51,6 +28,10 @@ useradd -m -u 1000 game
 mkdir -p /cache /data /game
 chown -R game:game /cache /data /game
 EOF
+
+COPY --from=dotnet_downloader /usr/share/dotnet /usr/share/dotnet
+RUN ls -al /usr/share/dotnet
+RUN ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet
 
 COPY $TARGETPLATFORM/single-player-tarkov /usr/local/bin/single-player-tarkov
 
