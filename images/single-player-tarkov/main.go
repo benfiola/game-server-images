@@ -497,8 +497,13 @@ func main() {
 					Name:    "version",
 					Sources: cli.EnvVars("VERSION"),
 				},
+				&cli.BoolFlag{
+					Name:    "debug",
+					Sources: cli.EnvVars("DEBUG"),
+				},
 			},
 			Action: func(ctx context.Context, c *cli.Command) error {
+				debug := c.Bool("debug")
 				configPatches := make(map[string][]jsonpatch.Patch)
 				if patchesJson := c.String("config-patches"); patchesJson != "" {
 					if err := json.Unmarshal([]byte(patchesJson), &configPatches); err != nil {
@@ -506,7 +511,7 @@ func main() {
 					}
 				}
 
-				return Main(ctx, Opts{
+				err := Main(ctx, Opts{
 					CachePath:     c.String("cache-path"),
 					ConfigPatches: configPatches,
 					DataPath:      c.String("data-path"),
@@ -514,6 +519,10 @@ func main() {
 					ModUrls:       c.StringSlice("mod-urls"),
 					Version:       c.String("version"),
 				})
+				if err != nil && debug {
+					time.Sleep(0)
+				}
+				return err
 			},
 		}),
 	)
