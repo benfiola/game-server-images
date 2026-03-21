@@ -142,48 +142,46 @@ func DownloadGame(ctx context.Context, c *cache.Cache, version string, gamePath 
 	return nil
 }
 
-func InstallMods(ctx context.Context, modUrls []string, gamePath string, c *cache.Cache) error {
+func InstallMod(ctx context.Context, c *cache.Cache, gamePath string, mod string) error {
 	logger := logging.FromContext(ctx)
 
-	if len(modUrls) == 0 {
-		logger.Debug("no mods to install")
-		return nil
-	}
+	key := fmt.Sprintf("mod-%s", mod)
+	logger.Info("installing mod", "mod", mod)
 
-	modsDir := filepath.Join(gamePath, "user", "mods")
-	if err := os.MkdirAll(modsDir, 0755); err != nil {
-		return err
-	}
-
-	for _, modUrl := range modUrls {
-		logger.Info("installing mod", "url", modUrl)
-
-		if c.Exists(ctx, modUrl) {
-			logger.Debug("mod already cached", "url", modUrl)
-			if err := c.Get(ctx, modUrl, modsDir); err != nil {
-				return err
-			}
-			continue
+	if !c.Exists(ctx, key) {
+		tempDir, err := os.MkdirTemp("", "spt-install-mods-*")
+		if err != nil {
+			return err
 		}
+		defer os.RemoveAll(tempDir)
 
-		tempFile := filepath.Join(modsDir, ".temp-mod.zip")
-		logger.Debug("downloading mod", "url", modUrl)
-		if err := httputil.Download(ctx, modUrl, tempFile); err != nil {
+		downloadPath := filepath.Join(tempDir, filepath.Base(mod))
+		if err := httputil.Download(ctx, mod, downloadPath); err != nil {
 			return fmt.Errorf("failed to download mod: %w", err)
 		}
 
-		logger.Debug("extracting mod archive")
-		if err := archive.Extract(ctx, tempFile, modsDir); err != nil {
-			os.Remove(tempFile)
+		if err := archive.Extract(ctx, downloadPath, gamePath); err != nil {
 			return fmt.Errorf("failed to extract mod: %w", err)
 		}
 
-		logger.Debug("caching mod", "url", modUrl)
-		if err := c.Put(ctx, modUrl, modsDir); err != nil {
-			logger.Error("failed to cache mod (continuing anyway)", "url", modUrl, "error", err)
+		if err := c.Put(ctx, key, gamePath); err != nil {
+			return fmt.Errorf("failed to cache mod: %w", err)
 		}
+	} else {
+		logger.Info("using cached mod", "mod", mod)
+		if err := c.Get(ctx, key, gamePath); err != nil {
+			return err
+		}
+	}
 
-		os.Remove(tempFile)
+	return nil
+}
+
+func InstallMods(ctx context.Context, c *cache.Cache, gamePath string, mods []string) error {
+	for _, mod := range mods {
+		if err := InstallMod(ctx, c, gamePath, mod); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -432,7 +430,7 @@ func Main(ctx context.Context, opts Opts) error {
 		return err
 	}
 
-	if err := InstallMods(ctx, opts.ModUrls, opts.GamePath, c); err != nil {
+	if err := InstallMods(ctx, c, opts.GamePath, opts.ModUrls); err != nil {
 		return err
 	}
 
