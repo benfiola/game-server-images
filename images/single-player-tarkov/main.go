@@ -148,30 +148,62 @@ func InstallMod(ctx context.Context, c *cache.Cache, gamePath string, mod string
 	key := fmt.Sprintf("mod-%s", mod)
 	logger.Info("installing mod", "mod", mod)
 
-	if !c.Exists(ctx, key) {
-		tempDir, err := os.MkdirTemp("", "spt-install-mods-*")
-		if err != nil {
-			return err
-		}
-		defer os.RemoveAll(tempDir)
+	destModsPath := filepath.Join(gamePath, "user", "mods")
+	if err := os.MkdirAll(destModsPath, 0755); err != nil {
+		return err
+	}
 
-		downloadPath := filepath.Join(tempDir, filepath.Base(mod))
+	tempPath, err := os.MkdirTemp("", "spt-install-mod-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tempPath)
+
+	extractPath := filepath.Join(tempPath, "extract")
+	if err := os.MkdirAll(extractPath, 0755); err != nil {
+		return err
+	}
+
+	if !c.Exists(ctx, key) {
+		downloadPath := filepath.Join(tempPath, filepath.Base(mod))
 		if err := httputil.Download(ctx, mod, downloadPath); err != nil {
 			return fmt.Errorf("failed to download mod: %w", err)
 		}
 
-		if err := archive.Extract(ctx, downloadPath, gamePath); err != nil {
+		if err := archive.Extract(ctx, downloadPath, extractPath); err != nil {
 			return fmt.Errorf("failed to extract mod: %w", err)
 		}
 
-		if err := c.Put(ctx, key, gamePath); err != nil {
+		if err := c.Put(ctx, key, extractPath); err != nil {
 			return fmt.Errorf("failed to cache mod: %w", err)
 		}
 	} else {
 		logger.Info("using cached mod", "mod", mod)
-		if err := c.Get(ctx, key, gamePath); err != nil {
+		if err := c.Get(ctx, key, extractPath); err != nil {
 			return err
 		}
+	}
+
+	srcModPath := ""
+	if err := filepath.WalkDir(extractPath, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && d.Name() == "mods" && filepath.Base(filepath.Dir(path)) == "user" {
+			srcModPath = path
+			return filepath.SkipAll
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("failed to find mod subfolder for %s: %w", mod, err)
+	}
+	if srcModPath == "" {
+		return fmt.Errorf("failed to find mod subfolder for %s", mod)
+	}
+
+	logger.Debug("copying mod", "src", srcModPath, "dst", destModsPath)
+	if err := os.CopyFS(destModsPath, os.DirFS(srcModPath)); err != nil {
+		return fmt.Errorf("failed to copy mod: %w", err)
 	}
 
 	return nil
