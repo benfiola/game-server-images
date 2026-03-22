@@ -199,7 +199,8 @@ func InstallMod(ctx context.Context, c *cache.Cache, gamePath string, mod string
 		return fmt.Errorf("failed to find mod subfolder for %s: %w", mod, err)
 	}
 	if srcModPath == "" {
-		return fmt.Errorf("failed to find mod subfolder for %s", mod)
+		logger.Warn("no mod subfolder for %s", mod)
+		return nil
 	}
 
 	logger.Debug("copying mod", "src", srcModPath, "dst", destModsPath)
