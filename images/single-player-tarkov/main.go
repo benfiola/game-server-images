@@ -32,6 +32,7 @@ const (
 type Opts struct {
 	CachePath     string
 	DataPath      string
+	DataSubDirs   []string
 	GamePath      string
 	Version       string
 	ModUrls       []string
@@ -339,35 +340,26 @@ func InitializeServer(ctx context.Context, gamePath string, version string) erro
 	return nil
 }
 
-func CreateSymlinks(ctx context.Context, gamePath string, dataPath string) error {
+func CreateSymlinks(ctx context.Context, gamePath string, dataPath string, subDirs []string) error {
 	logger := logging.FromContext(ctx)
 	logger.Info("creating data persistence symlinks")
 
-	if err := os.MkdirAll(filepath.Join(dataPath, "user"), 0755); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Join(dataPath, "logs"), 0755); err != nil {
-		return err
-	}
+	for _, subDir := range subDirs {
+		dataSubPath := filepath.Join(dataPath, subDir)
+		gameSubPath := filepath.Join(gamePath, subDir)
 
-	userDir := filepath.Join(gamePath, "user")
-	if err := os.RemoveAll(userDir); err != nil && !os.IsNotExist(err) {
-		return err
-	}
+		if err := os.MkdirAll(dataSubPath, 0755); err != nil {
+			return err
+		}
 
-	logsDir := filepath.Join(gamePath, "Logs")
-	if err := os.RemoveAll(logsDir); err != nil && !os.IsNotExist(err) {
-		return err
-	}
+		if err := os.RemoveAll(gameSubPath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 
-	logger.Debug("creating symlink", "src", filepath.Join(dataPath, "user"), "dst", userDir)
-	if err := os.Symlink(filepath.Join(dataPath, "user"), userDir); err != nil {
-		return fmt.Errorf("failed to create user symlink: %w", err)
-	}
-
-	logger.Debug("creating symlink", "src", filepath.Join(dataPath, "logs"), "dst", logsDir)
-	if err := os.Symlink(filepath.Join(dataPath, "logs"), logsDir); err != nil {
-		return fmt.Errorf("failed to create logs symlink: %w", err)
+		logger.Debug("creating symlink", "src", dataSubPath, "dst", gameSubPath)
+		if err := os.Symlink(dataSubPath, gameSubPath); err != nil {
+			return fmt.Errorf("failed to create user symlink: %w", err)
+		}
 	}
 
 	return nil
@@ -483,7 +475,9 @@ func Main(ctx context.Context, opts Opts) error {
 		return err
 	}
 
-	if err := CreateSymlinks(ctx, opts.GamePath, opts.DataPath); err != nil {
+	dataSubDirs := []string{"user/profiles"}
+	dataSubDirs = append(dataSubDirs, opts.DataSubDirs...)
+	if err := CreateSymlinks(ctx, opts.GamePath, opts.DataPath, dataSubDirs); err != nil {
 		return err
 	}
 
@@ -513,6 +507,10 @@ func main() {
 					Name:    "data-path",
 					Value:   "/data",
 					Sources: cli.EnvVars("DATA_PATH"),
+				},
+				&cli.StringSliceFlag{
+					Name:    "data-subdirs",
+					Sources: cli.EnvVars("DATA_SUBDIRS"),
 				},
 				&cli.StringFlag{
 					Name:    "game-path",
@@ -545,6 +543,7 @@ func main() {
 					CachePath:     c.String("cache-path"),
 					ConfigPatches: configPatches,
 					DataPath:      c.String("data-path"),
+					DataSubDirs:   c.StringSlice("data-sub-dirs"),
 					GamePath:      c.String("game-path"),
 					ModUrls:       c.StringSlice("mod-urls"),
 					Version:       c.String("version"),
