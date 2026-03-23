@@ -539,16 +539,11 @@ func main() {
 					Name:    "auto-restart",
 					Sources: cli.EnvVars("AUTO_RESTART"),
 				},
-				&cli.BoolFlag{
-					Name:    "debug",
-					Sources: cli.EnvVars("DEBUG"),
-				},
 			},
 			Action: func(ctx context.Context, c *cli.Command) error {
-				debug := c.Bool("debug")
 				mods := CombineMods(c.StringSlice("mod-urls"), c.StringSlice("root-urls"))
 
-				err := Main(ctx, Opts{
+				return Main(ctx, Opts{
 					CachePath:         c.String("cache-path"),
 					DataPath:          c.String("data-path"),
 					GamePath:          c.String("game-path"),
@@ -557,10 +552,6 @@ func main() {
 					Mods:              mods,
 					AutoRestart:       c.Duration("auto-restart"),
 				})
-				if err != nil && debug {
-					time.Sleep(0)
-				}
-				return err
 			},
 		}),
 	)
